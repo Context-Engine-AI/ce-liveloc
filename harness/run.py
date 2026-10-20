@@ -92,13 +92,20 @@ def run_one(task, arm, model, seed, collection, build):
     os.makedirs(llcore.RUNS, exist_ok=True)
     base = os.path.join(llcore.RUNS, run_key(task["id"], arm, model, seed))
     if os.path.exists(base + ".json"):
-        return json.load(open(base + ".json"))
+        prev = json.load(open(base + ".json"))
+        if prev.get("digest_valid") is not False and prev.get("ok"):
+            return prev
+        stamp = time.strftime("%Y%m%dT%H%M%S")  # invalid (build changed mid-run or no result): keep it, run again
+        for ext in (".json", ".jsonl", ".hook.jsonl", ".stderr"):
+            if os.path.exists(base + ext):
+                os.replace(base + ext, base + f".invalid-{stamp}{ext}")
     tree = llcore.tree_dir(task["repo"], task["snapshot"])
     for ext in (".jsonl", ".hook.jsonl", ".stderr"):
         if os.path.exists(base + ext):
             os.remove(base + ext)
     env = {**os.environ, **llcore.bedrock_env(), "LIVELOC_HOOK_LOG": base + ".hook.jsonl",
            "LIVELOC_COLLECTION": collection or "", "DISABLE_AUTOUPDATER": "1"}
+    digest_start = llcore.indexer_digests() if arm != "A" else None
     t0 = time.time()
     with open(base + ".jsonl", "w") as out, open(base + ".stderr", "w") as err:
         proc = subprocess.Popen(build_cmd(task, arm, model), cwd=tree, stdout=subprocess.PIPE, stderr=err,
@@ -144,6 +151,9 @@ def run_one(task, arm, model, seed, collection, build):
            "tool_calls_by_name": tools, "ce_calls": sum(v for k, v in tools.items() if k.startswith(score.CE_PREFIX)),
            "init": init, "build": build, "plugin": PLUGIN_SHA if arm == "P" else None,
            "denied": denied, "stderr_tail": open(base + ".stderr").read()[-800:] if not result else ""}
+    if arm != "A":  # CE arms: the serving build must not change during the run
+        rec["digest_start"], rec["digest_end"] = digest_start, llcore.indexer_digests()
+        rec["digest_valid"] = rec["digest_start"] == rec["digest_end"] == [build]
     rec["score"] = score.score(task, tree, base + ".jsonl", base + ".hook.jsonl", collection)
     llcore.save_json(base + ".json", rec)
     return rec

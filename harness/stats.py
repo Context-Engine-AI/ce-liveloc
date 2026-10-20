@@ -39,8 +39,11 @@ METRICS = [  # (name, getter, kind)
 def load(split, model, repos):
     runs = {}
     for p in glob.glob(os.path.join(llcore.RUNS, f"*__{model}__s*.json")):
+        if ".invalid-" in p or p.endswith(".hook.json"):
+            continue
         r = json.load(open(p))
-        if r.get("split") != split or (repos and r["repo"] not in repos) or not r.get("ok") or "score" not in r:
+        if r.get("split") != split or (repos and r["repo"] not in repos) or not r.get("ok") or "score" not in r \
+                or r.get("digest_valid") is False:
             continue
         runs[(r["id"], r["arm"])] = r
     return runs

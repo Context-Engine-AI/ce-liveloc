@@ -19,9 +19,20 @@ import score
 import treesit
 
 
+def call(mcp, name, args, tries=4):
+    """CE tool call that rides out transient 5xx from the edge (the gate must not fail on a blip)."""
+    for i in range(tries):
+        try:
+            return mcp.tool(name, args)
+        except RuntimeError:
+            if i == tries - 1:
+                raise
+            llcore.time.sleep(15 * (i + 1))
+
+
 def gold_fresh(mcp, collection, tree, f, defs):
     q = (defs[0][1] if defs else os.path.splitext(os.path.basename(f))[0])
-    st = mcp.tool("search", {"query": q, "collection": collection, "path_glob": f, "limit": 3})
+    st = call(mcp, "search", {"query": q, "collection": collection, "path_glob": f, "limit": 3})
     view, rows, _ = score.ce_view(tree, json.dumps(st), collection)
     return bool(view.get(f)), rows[:3]
 
@@ -36,7 +47,7 @@ def coverage(mcp, collection, tree):
     files.sort(key=lambda f: hashlib.sha256(f.encode()).hexdigest())
     hit = 0
     for f in files[:COVER_N]:
-        st = mcp.tool("search", {"query": os.path.splitext(os.path.basename(f))[0], "collection": collection,
+        st = call(mcp, "search", {"query": os.path.splitext(os.path.basename(f))[0], "collection": collection,
                                  "path_glob": f, "limit": 1})
         hit += any(r.get("path") == f for r in st.get("results") or [])
     return hit / max(1, min(COVER_N, len(files)))
@@ -55,7 +66,7 @@ def main():
         tree, coll = rec["tree"], rec["collection"]
         mcp = llcore.Mcp(tree)
         try:
-            st = mcp.tool("search", {"query": "main", "limit": 1})
+            st = call(mcp, "search", {"query": "main", "limit": 1})
             routed = st.get("collection") == coll
             cov = coverage(mcp, coll, tree)
             bad, n = [], 0
