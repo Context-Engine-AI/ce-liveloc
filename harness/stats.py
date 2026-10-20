@@ -81,7 +81,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="dev")
     ap.add_argument("--model", default="haiku55")
-    ap.add_argument("--arms", default="B,F,H")
+    ap.add_argument("--arms", default="B,F,H,P")
     ap.add_argument("--repos")
     ap.add_argument("--out")
     a = ap.parse_args()
@@ -91,8 +91,8 @@ def main():
     lines = [f"## CE-LiveLoc {a.split} — {a.model}\n"]
     # per-arm descriptives + adoption
     lines.append("| arm | runs | median TtG | found@32k | median turns-to-gold | answer recall | fn/hunk hit | $/run | "
-                 "CE calls/run | runs using CE | hook hits/run |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+                 "CE calls/run | runs using CE | hook hits/run | plugin denies/run |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for arm in ["A"] + arms:
         rs = [runs[(i, arm)] for i in ids if (i, arm) in runs]
         if not rs:
@@ -104,7 +104,8 @@ def main():
                      f"{statistics.median(ttt):.0f} | {statistics.mean(r['score']['answer_recall'] for r in rs):.2f} | "
                      f"{statistics.mean(r['score']['fn_hit'] for r in rs):.2f} | {statistics.mean(r['cost_usd'] or 0 for r in rs):.4f} | "
                      f"{statistics.mean(r['ce_calls'] for r in rs):.2f} | {100 * use / len(rs):.0f}% | "
-                     f"{statistics.mean(r['score']['hook_hits'] for r in rs):.2f} |")
+                     f"{statistics.mean(r['score']['hook_hits'] for r in rs):.2f} | "
+                     f"{statistics.mean(r.get('denied') or 0 for r in rs):.2f} |")
     lines.append(f"\nTtG censored at {CAP:,} tokens and turns at {TURN_CAP} when gold was never seen.\n")
     lines.append("| metric | " + " | ".join(f"{x} − A (n, Δ [95% CI], p_holm)" for x in arms) + " |")
     lines.append("|---|" + "---|" * len(arms))

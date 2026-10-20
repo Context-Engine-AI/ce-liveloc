@@ -9,6 +9,8 @@ Arms (same task prompt for all; only tools / instructions differ):
   B  A + Context Engine MCP tools via the proxy; collection routed by X-Collection from the cwd mapping
   F  B + one customer-style CLAUDE.md instruction (CE first), passed as an appended system prompt
   H  A + PreToolUse hook on Grep/Glob/Bash(grep|rg) that injects CE search hits (ce_hook.cjs)
+  P  B with A's prompt + the CE Claude Code plugin (--plugin-dir; Context-Engine-AI/claude-plugins @ PLUGIN_SHA):
+     a SessionStart/SubagentStart note and at most 2 denied concept/identifier greps that name the exact CE call
 Each run: cwd = the read-only snapshot tree, --max-turns 15, stream-json captured with timestamps.
 """
 import argparse
@@ -37,6 +39,8 @@ BUDGET_USD = 1.0
 TIMEOUT_S = 600
 VALID_CAPS = ("error_max_turns", "error_max_budget_usd")
 HOOK = os.path.join(llcore.HERE, "ce_hook.cjs")
+PLUGIN_DIR = os.environ.get("LIVELOC_PLUGIN_DIR", "/tmp/liveloc/plugins/claude-plugins/context-engine")
+PLUGIN_SHA = "5c865ce"
 HOOK_SETTINGS = os.path.join(llcore.WORK, "hook-settings.json")
 
 PROMPT = """{title}
@@ -64,7 +68,7 @@ def write_hook_settings():
 
 
 def build_cmd(task, arm, model):
-    ce = arm in ("B", "F")
+    ce = arm in ("B", "F", "P")
     cmd = ["claude", "-p", prompt_for(task), "--setting-sources", "", "--strict-mcp-config",
            "--mcp-config", llcore.MCP_CFG if ce else llcore.NO_MCP_CFG,
            "--tools", ",".join(BUILTIN), "--allowedTools", " ".join(BUILTIN + (CE_TOOLS if ce else [])),
@@ -75,6 +79,8 @@ def build_cmd(task, arm, model):
         cmd += ["--append-system-prompt", CE_FIRST]
     if arm == "H":
         cmd += ["--settings", HOOK_SETTINGS]
+    if arm == "P":
+        cmd += ["--plugin-dir", PLUGIN_DIR]
     return cmd
 
 
@@ -111,9 +117,12 @@ def run_one(task, arm, model, seed, collection, build):
         proc.wait()
         timed_out = not timer.is_alive() and proc.returncode != 0
         timer.cancel()
-    result, init, tools = None, {}, {}
+    result, init, tools, denied = None, {}, {}, 0
     for line in open(base + ".jsonl"):
         ev = json.loads(line)["ev"]
+        if ev.get("type") == "user" and isinstance(ev.get("message", {}).get("content"), list):
+            denied += sum(1 for b in ev["message"]["content"] if isinstance(b, dict) and b.get("type") == "tool_result"
+                          and b.get("is_error") and "context engine" in json.dumps(b.get("content")).lower())
         if ev.get("type") == "system" and ev.get("subtype") == "init":
             init = {k: ev.get(k) for k in ("model", "claude_code_version", "tools", "mcp_servers", "cwd")}
         elif ev.get("type") == "assistant":
@@ -133,7 +142,8 @@ def run_one(task, arm, model, seed, collection, build):
            "usage": usage, "total_tokens": sum(usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
                                                                             "cache_read_input_tokens", "output_tokens")),
            "tool_calls_by_name": tools, "ce_calls": sum(v for k, v in tools.items() if k.startswith(score.CE_PREFIX)),
-           "init": init, "build": build, "stderr_tail": open(base + ".stderr").read()[-800:] if not result else ""}
+           "init": init, "build": build, "plugin": PLUGIN_SHA if arm == "P" else None,
+           "denied": denied, "stderr_tail": open(base + ".stderr").read()[-800:] if not result else ""}
     rec["score"] = score.score(task, tree, base + ".jsonl", base + ".hook.jsonl", collection)
     llcore.save_json(base + ".json", rec)
     return rec

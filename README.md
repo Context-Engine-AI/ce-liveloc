@@ -49,6 +49,7 @@ In 37 tasks (`leak_path`) the issue names a gold file. That is a reported stratu
 | B | A + CE MCP tools |
 | F | B + a one-line "use CE first" instruction |
 | H | A + a PreToolUse hook that answers every Grep/Glob/grep with CE's top 5 hits, so the agent never has to choose CE |
+| P | B's tools + the CE Claude Code plugin ([claude-plugins](https://github.com/Context-Engine-AI/claude-plugins) @ 5c865ce): a session note, and up to 2 greps denied with the exact CE call |
 
 Details are in [PREREGISTRATION.md](PREREGISTRATION.md).
 

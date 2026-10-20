@@ -6,7 +6,7 @@ adds this file is the timestamp.
 ## Hypothesis
 
 Giving a coding agent Context Engine (CE) retrieval reduces the tokens it spends before it first sees the code
-that must change (tokens-to-gold, TtG). We test three ways of delivering CE (B, F, H) against built-in tools (A).
+that must change (tokens-to-gold, TtG). We test four ways of delivering CE (B, F, H, P) against built-in tools (A).
 
 ## Task set (frozen)
 
@@ -37,6 +37,7 @@ same limits: `--max-turns 15`, `--max-budget-usd 1`, 600 s.
 | B | A, plus CE MCP (`search`, `repo_search`, `symbol_graph`, `context_answer`, `graph_query`) through the CE proxy. The collection is routed by `X-Collection` from the cwd's workspace mapping; the prompt does not mention CE. |
 | F | B, plus one appended system instruction: "Use the Context Engine tools (repo_search / search / symbol_graph) to locate code before Grep/Glob/Read; use Grep only for exact-string checks." |
 | H | A, plus a PreToolUse hook on Grep/Glob/Bash(grep\|rg). The hook sends the pattern to CE `search` (3 s timeout) and injects the top 5 hits (path:lines, symbol, first line; at most 1.5 KB) as `additionalContext`. |
+| P | B's tools with A's prompt, plus the CE Claude Code plugin ([Context-Engine-AI/claude-plugins](https://github.com/Context-Engine-AI/claude-plugins) @ `5c865ce`, loaded with `--plugin-dir`). It adds a SessionStart/SubagentStart note and denies at most the first 2 concept or identifier greps per session, naming the exact CE call. (Amendment, 2026-10-20 16:10Z, before any test run. Verified: with `--setting-sources ""` the plugin's SessionStart note and its PreToolUse deny both fire.) |
 
 Models: Haiku 5.5 (`us.anthropic.claude-haiku-5-5`) and Sonnet 5.5 (`us.anthropic.claude-sonnet-5-5`), one seed
 each. The model is analysed as a separate family.
@@ -74,9 +75,9 @@ We also report adoption: CE calls per run, the share of runs that use CE, and ho
 
 ## Analysis
 
-- For each model, each arm B/F/H is compared with A on the per-task difference.
+- For each model, each arm B/F/H/P is compared with A on the per-task difference.
 - The 95% CI is a bootstrap over tasks (10,000 draws, seed 7).
-- p is a sign-flip permutation test (exact for n ≤ 16, else 20,000 draws), with Holm correction across the three
+- p is a sign-flip permutation test (exact for n ≤ 16, else 20,000 draws), with Holm correction across the four
   arms. The primary claim is at α = 0.05.
 - A run is invalid if the CLI produced no result event or the run timed out. An invalid run is retried once; a
   task still invalid in any compared arm drops out of that pair.
