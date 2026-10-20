@@ -35,6 +35,7 @@ CE_DENY = ["mcp__context-engine__qdrant_list", "mcp__context-engine__qdrant_stat
 MAX_TURNS = 15
 BUDGET_USD = 1.0
 TIMEOUT_S = 600
+VALID_CAPS = ("error_max_turns", "error_max_budget_usd")
 HOOK = os.path.join(llcore.HERE, "ce_hook.cjs")
 HOOK_SETTINGS = os.path.join(llcore.WORK, "hook-settings.json")
 
@@ -124,7 +125,9 @@ def run_one(task, arm, model, seed, collection, build):
     usage = (result or {}).get("usage") or {}
     rec = {"id": task["id"], "repo": task["repo"], "language": task["language"], "arm": arm, "model": model,
            "seed": seed, "split": task["split"], "collection": collection,
-           "ok": bool(result) and not result.get("is_error"), "subtype": (result or {}).get("subtype"),
+           # hitting the turn/budget cap is a legitimate outcome (no answer), not an invalid run
+           "ok": bool(result) and (not result.get("is_error") or result.get("subtype") in VALID_CAPS),
+           "subtype": (result or {}).get("subtype"),
            "timed_out": timed_out, "returncode": proc.returncode, "wall_s": round(time.time() - t0, 1),
            "cost_usd": (result or {}).get("total_cost_usd"), "num_turns": (result or {}).get("num_turns"),
            "usage": usage, "total_tokens": sum(usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
@@ -163,17 +166,18 @@ def main():
     if a.repos:
         tasks = [t for t in tasks if t["repo"] in set(a.repos.split(","))]
     colls = llcore.load_json(llcore.COLLECTIONS)
-    ready = {k for k, v in colls.items() if v.get("status") in ("indexed", "uploaded") and v.get("fresh")}
-    skipped = sorted({t["tree"] for t in tasks} - ready)
-    if skipped:
-        print("not ready (unindexed or failed the freshness gate), skipped:", skipped, flush=True)
-    tasks = [t for t in tasks if t["tree"] in ready]
+    arms = a.arms.split(",")
+    if set(arms) - {"A"}:  # arm A never touches CE, so only CE arms need a fresh, routed collection
+        ready = {k for k, v in colls.items() if v.get("collection") and (v.get("fresh_split") or {}).get(a.split)}
+        skipped = sorted({t["tree"] for t in tasks} - ready)
+        if skipped:
+            print("not ready (unindexed or failed the freshness gate), skipped:", skipped, flush=True)
+        tasks = [t for t in tasks if t["tree"] in ready]
     builds = llcore.indexer_digests()
     if len(builds) != 1:
         sys.exit(f"mcp-indexer-http must run exactly one digest: {builds}")
     llcore.write_mcp_configs()
     write_hook_settings()
-    arms = a.arms.split(",")
     # interleave arms per task so a mid-run CE change hits all arms alike
     jobs = [(t, arm) for t in tasks for arm in arms]
     print(f"{len(jobs)} runs ({len(tasks)} tasks x {arms}) model={a.model} build={builds[0][:19]} "
@@ -184,7 +188,7 @@ def main():
         with lock:
             if spent() + BUDGET_USD > a.cap:
                 raise RuntimeError("cost cap reached")
-        return run_one(t, arm, a.model, a.seed, colls[t["tree"]]["collection"], builds[0])
+        return run_one(t, arm, a.model, a.seed, colls.get(t["tree"], {}).get("collection"), builds[0])
 
     t0 = time.time()
     with cf.ThreadPoolExecutor(a.jobs) as ex:

@@ -19,6 +19,7 @@ Usage: score.py RUN.json ...   re-scores runs in place
 import json
 import os
 import re
+import shlex
 import sys
 
 import llcore
@@ -86,22 +87,72 @@ def grep_view(tree, inp, text):
     return grep_lines(tree, text, treesit.resolve(tree, target) if target and os.path.isfile(abs_t) else "")
 
 
+SEG_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\n)\s*")
+PRINTERS = {"cat", "head", "tail", "sed", "nl", "less", "more", "awk", "bat"}
+GREPS = {"grep", "egrep", "rg", "git-grep"}
+
+
+def _rel(tree, cwd, p):
+    p = (p or "").strip().strip("'\"")
+    if not p or p.startswith("-"):
+        return ""
+    return _res(tree, p if os.path.isabs(p) else os.path.normpath(os.path.join(cwd, p)))
+
+
+def _nlines(tree, f):
+    offs = treesit._line_offsets(os.path.join(tree, f))[0]
+    return len(offs) if offs else 1
+
+
 def bash_view(tree, inp, text):
-    """grep -n style output, or a cat/sed/head/tail/nl of one file (its output = that file's code)."""
+    """Code a Bash command printed: cat/sed/head/tail/nl of files (per `cd`), and grep -n style lines."""
     cmd = (inp or {}).get("command") or ""
-    if not text.strip():
+    if not text.strip() or text.startswith("Permission to use Bash"):
         return {}
-    v = grep_lines(tree, text)
-    if v:
-        return v
-    m = re.match(r"^\s*(cat|head|tail|sed|nl|less|more|awk)\b", cmd)
-    if m and "|" not in cmd:
-        files = [f for f in (_res(tree, tok) for tok in re.findall(r"[\w./@+-]+\.[A-Za-z0-9]+", cmd)) if f]
-        if len(set(files)) == 1:
-            nums = [int(x) for x in re.findall(r"(?m)^\s*(\d+)[\t:]", text)]
-            n = treesit._line_offsets(os.path.join(tree, files[0]))[0]
-            return {files[0]: [(min(nums), max(nums))] if nums else [(1, len(n) if n else 1)]}
-    return {}
+    cwd, cwds, view, single = tree, [tree], {}, []
+    for seg in SEG_SPLIT.split(cmd):
+        first = seg.split("|")[0].strip()
+        try:
+            toks = shlex.split(first)
+        except ValueError:
+            toks = first.split()
+        if not toks:
+            continue
+        if toks[0] == "cd" and len(toks) > 1:
+            cwd = os.path.normpath(os.path.join(cwd, toks[1].strip("'\"")))
+            cwds.append(cwd)
+            continue
+        if toks[0] in GREPS:
+            files = [f for f in (_rel(tree, cwd, t) for t in toks[1:]) if f]
+            if len(files) == 1 and not any(t in ("-r", "-R", "-rn", "-Rn", "-nr", "-rni", "-H") for t in toks):
+                single.append(files[0])
+            continue
+        if toks[0] in PRINTERS:
+            rng = None
+            m = re.search(r"(\d+),(\d+)p", first)
+            if toks[0] == "sed" and m:
+                rng = (int(m.group(1)), int(m.group(2)))
+            m = re.search(r"(?:-n\s*|-)(\d+)\b", first)
+            if toks[0] == "head" and m:
+                rng = (1, int(m.group(1)))
+            for f in {f for f in (_rel(tree, cwd, t) for t in toks[1:]) if f}:
+                n = _nlines(tree, f)
+                if toks[0] == "tail" and m:
+                    rng = (max(1, n - int(m.group(1)) + 1), n)
+                s, e = rng or (1, n)
+                view.setdefault(f, []).append((max(1, s), min(n, max(s, e))))
+    for line in text.split("\n"):
+        m = re.match(r"^(\d+)[:-]", line)
+        if m and len(set(single)) == 1:
+            view.setdefault(single[0], []).append((int(m.group(1)),) * 2)
+            continue
+        for m in re.finditer(r"([:-])(\d+)\1", line):
+            prefix = line[:m.start()]
+            f = next((r for r in (_rel(tree, c, prefix) for c in reversed(cwds)) if r), "")
+            if f:
+                view.setdefault(f, []).append((int(m.group(2)),) * 2)
+                break
+    return {f: treesit.merge(v) for f, v in view.items()}
 
 
 def _ce_rows(obj, rows):

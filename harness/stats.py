@@ -128,6 +128,11 @@ def main():
     if a.out:
         os.makedirs(os.path.dirname(a.out), exist_ok=True)
         open(a.out, "w").write(out)
+        with open(a.out[:-3] + "-runs.jsonl", "w") as fh:  # compact per-run records (no raw traces)
+            for k in sorted(runs):
+                r = {x: v for x, v in runs[k].items() if x not in ("stderr_tail", "init")}
+                r["claude_code_version"] = (runs[k].get("init") or {}).get("claude_code_version")
+                fh.write(json.dumps(r, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":

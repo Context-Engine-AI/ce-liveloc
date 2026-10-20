@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Freshness + routing gate per collection, before any run.
 
-Usage: freshness.py TREE_NAME [...]   (tree name = liveloc-<owner>__<repo>-<sha8>; default: all indexed)
+Usage: freshness.py [--split dev|test] TREE_NAME [...]   (tree name = liveloc-<owner>__<repo>-<sha8>; default: all)
 
 routing: a collection-less `search` sent through the proxy from the tree's cwd must answer from this collection.
 fresh:   for every task gold file, a path-filtered `search` must return a row of that file whose code matches the
-         snapshot tree at the claimed lines (verified_lines). Marks collections.json[tree]["fresh"] = True/False.
+         snapshot tree at the claimed lines (verified_lines). Records collections.json[tree]["fresh_split"][split].
 """
 import json
 import os
@@ -24,8 +24,12 @@ def gold_fresh(mcp, collection, tree, f, defs):
 
 
 def main():
+    args = sys.argv[1:]
+    split = None
+    if args[:1] == ["--split"]:
+        split, args = args[1], args[2:]
     colls = llcore.load_json(llcore.COLLECTIONS)
-    names = sys.argv[1:] or [k for k, v in colls.items() if v.get("collection")]
+    names = args or [k for k, v in colls.items() if v.get("collection")]
     tasks = llcore.load_jsonl(llcore.TASKS)
     for name in names:
         rec = colls[name]
@@ -36,7 +40,7 @@ def main():
             routed = st.get("collection") == coll
             bad, n = [], 0
             for t in tasks:
-                if t["tree"] != name:
+                if t["tree"] != name or (split and t["split"] != split):
                     continue
                 for f in t["gold_files"]:
                     n += 1
@@ -46,10 +50,12 @@ def main():
         finally:
             mcp.close()
         colls = llcore.load_json(llcore.COLLECTIONS)
-        colls[name].update({"routed": routed, "gold_checked": n, "gold_stale": bad,
-                            "fresh": routed and not bad, "fresh_checked_at": llcore.time.strftime("%Y-%m-%dT%H:%M:%SZ", llcore.time.gmtime())})
+        fs = colls[name].setdefault("fresh_split", {})
+        for sp in ([split] if split else ["dev", "test"]):
+            fs[sp] = routed and not bad
+        colls[name].update({"routed": routed, "gold_checked": n, "gold_stale": bad, "fresh_checked_at": llcore.time.strftime("%Y-%m-%dT%H:%M:%SZ", llcore.time.gmtime())})
         llcore.save_json(llcore.COLLECTIONS, colls)
-        print(name, "routed", routed, "gold", n, "stale", len(bad), [b["file"] for b in bad][:5], flush=True)
+        print(name, split or "all", "routed", routed, "gold", n, "stale", len(bad), [b["file"] for b in bad][:5], flush=True)
 
 
 if __name__ == "__main__":
