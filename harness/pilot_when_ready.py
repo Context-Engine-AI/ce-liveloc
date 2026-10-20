@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Launch the CE arms of the dev pilot per repo once its collection is ready.
 
-Ready = (bridge reported the upload indexed and the point count held for one 6-min poll, or the count held for
-three polls) AND the dev freshness/routing gate passes.
+Ready = the point count held for one 6-min poll AND the dev freshness/routing/coverage gate passes
+(freshness.py: dev gold files fresh, collection-less calls routed, >= 95% of 40 sampled source files indexed).
 Usage: pilot_when_ready.py REPO [...]   (env LIVELOC_KUBE_CONTEXT for digest stamping)
 """
 import subprocess
@@ -37,7 +37,7 @@ def main():
             done = colls[name].get("status") in ("indexed", "uploaded")
             print(time.strftime("%H:%M:%SZ", time.gmtime()), repo, "points", n, "held", held[name], "bridge_done", done,
                   flush=True)
-            if not ((done and held[name] >= 1) or held[name] >= 3):
+            if held[name] < 1:
                 continue
             subprocess.run([sys.executable, "freshness.py", "--split", "dev", name], check=False)
             if (llcore.load_json(llcore.COLLECTIONS)[name].get("fresh_split") or {}).get("dev"):

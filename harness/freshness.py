@@ -6,7 +6,10 @@ Usage: freshness.py [--split dev|test] TREE_NAME [...]   (tree name = liveloc-<o
 routing: a collection-less `search` sent through the proxy from the tree's cwd must answer from this collection.
 fresh:   for every task gold file, a path-filtered `search` must return a row of that file whose code matches the
          snapshot tree at the claimed lines (verified_lines). Records collections.json[tree]["fresh_split"][split].
+coverage: 40 seeded random uploaded source files must be searchable by path (>= 95%), so a half-built index
+         that happens to contain the gold files does not pass.
 """
+import hashlib
 import json
 import os
 import sys
@@ -21,6 +24,22 @@ def gold_fresh(mcp, collection, tree, f, defs):
     st = mcp.tool("search", {"query": q, "collection": collection, "path_glob": f, "limit": 3})
     view, rows, _ = score.ce_view(tree, json.dumps(st), collection)
     return bool(view.get(f)), rows[:3]
+
+
+COVER_N, COVER_MIN = 40, 0.95
+
+
+def coverage(mcp, collection, tree):
+    import build_tasks
+    import mine_tasks
+    files = sorted(f for f in build_tasks.indexable_set(tree) if mine_tasks.is_src(f))
+    files.sort(key=lambda f: hashlib.sha256(f.encode()).hexdigest())
+    hit = 0
+    for f in files[:COVER_N]:
+        st = mcp.tool("search", {"query": os.path.splitext(os.path.basename(f))[0], "collection": collection,
+                                 "path_glob": f, "limit": 1})
+        hit += any(r.get("path") == f for r in st.get("results") or [])
+    return hit / max(1, min(COVER_N, len(files)))
 
 
 def main():
@@ -38,6 +57,7 @@ def main():
         try:
             st = mcp.tool("search", {"query": "main", "limit": 1})
             routed = st.get("collection") == coll
+            cov = coverage(mcp, coll, tree)
             bad, n = [], 0
             for t in tasks:
                 if t["tree"] != name or (split and t["split"] != split):
@@ -52,10 +72,10 @@ def main():
         colls = llcore.load_json(llcore.COLLECTIONS)
         fs = colls[name].setdefault("fresh_split", {})
         for sp in ([split] if split else ["dev", "test"]):
-            fs[sp] = routed and not bad
-        colls[name].update({"routed": routed, "gold_checked": n, "gold_stale": bad, "fresh_checked_at": llcore.time.strftime("%Y-%m-%dT%H:%M:%SZ", llcore.time.gmtime())})
+            fs[sp] = routed and not bad and cov >= COVER_MIN
+        colls[name].update({"routed": routed, "coverage": cov, "gold_checked": n, "gold_stale": bad, "fresh_checked_at": llcore.time.strftime("%Y-%m-%dT%H:%M:%SZ", llcore.time.gmtime())})
         llcore.save_json(llcore.COLLECTIONS, colls)
-        print(name, split or "all", "routed", routed, "gold", n, "stale", len(bad), [b["file"] for b in bad][:5], flush=True)
+        print(name, split or "all", "routed", routed, f"coverage {cov:.2f}", "gold", n, "stale", len(bad), [b["file"] for b in bad][:5], flush=True)
 
 
 if __name__ == "__main__":
