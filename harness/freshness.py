@@ -47,8 +47,10 @@ def coverage(mcp, collection, tree):
     files.sort(key=lambda f: hashlib.sha256(f.encode()).hexdigest())
     hit = 0
     for f in files[:COVER_N]:
-        st = call(mcp, "search", {"query": os.path.splitext(os.path.basename(f))[0], "collection": collection,
-                                 "path_glob": f, "limit": 1})
+        # path_glob filters CE's ranked candidates, so probe with one of the file's own definition names
+        names = [n for _k, n, _s, _e in treesit.file_defs(os.path.join(tree, f)) if n and len(n) >= 4]
+        q = max(names[:8], key=len) if names else os.path.splitext(os.path.basename(f))[0]
+        st = call(mcp, "search", {"query": q, "collection": collection, "path_glob": f, "limit": 1})
         hit += any(r.get("path") == f for r in st.get("results") or [])
     return hit / max(1, min(COVER_N, len(files)))
 

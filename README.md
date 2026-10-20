@@ -16,6 +16,30 @@ before it first sees the code that must change, and whether Context Engine (CE) 
 - **Cheap.** A localization run ends at the answer or at 15 turns. A Haiku 5.5 run costs about $0.01 and takes
   about 30 s.
 
+## Status (2026-10-20 21:15Z)
+
+**Done:**
+
+- The task set is frozen and pre-registered: 149 tasks, dev 30 / test 119.
+- All 6 snapshots are uploaded to CE.
+- Arm A dev baselines are in for both models, below.
+
+**Pending:** the CE arms (B/F/H/P). They wait on CE indexing. Server-side indexing slowed to minutes per 50 files
+because of a Helion upsert-latency incident.
+
+- `harness/pilot_when_ready.py` runs B/F/H/P for each repo once its collection passes the gate. The gate requires a
+  stable point count, fresh and routed dev gold, and ≥95% of 40 sampled source files indexed.
+- It then writes `results/dev-haiku55-<repo>.md`.
+
+**Arm A dev baselines** (30 tasks):
+
+| Model | Gold found | Median TtG (tokens) | found@32k | Median turns-to-gold | Answer recall | Answer precision | $/run | Mean wall/run |
+|---|---|---|---|---|---|---|---|---|
+| Haiku 5.5 | 28/30 | 3.1k | 0.93 | 1 | 0.86 | 0.73 | 0.004 | 22 s |
+| Sonnet 5.5 | 28/30 | 1.2k | 0.93 | 1 | 0.86 | 0.79 | 0.042 | 19 s |
+
+At 12 concurrent runs, 30 runs take about 75 s.
+
 ## Repos (snapshot = last default-branch commit before 2026-09-01)
 
 | Repo | Snapshot | Main language | Indexable files | Tasks (dev/test) |
