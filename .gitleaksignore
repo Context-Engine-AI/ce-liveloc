@@ -1,0 +1,10 @@
+# git blob SHAs of gold files whose names contain key/secret/credential (data/tasks.jsonl gold_blob)
+data/tasks.jsonl:generic-api-key:58
+data/tasks.jsonl:generic-api-key:67
+data/tasks.jsonl:generic-api-key:101
+data/tasks.jsonl:generic-api-key:104
+data/tasks.jsonl:generic-api-key:110
+data/tasks.jsonl:generic-api-key:114
+data/tasks.jsonl:generic-api-key:116
+data/tasks.jsonl:generic-api-key:119
+data/tasks.jsonl:generic-api-key:121

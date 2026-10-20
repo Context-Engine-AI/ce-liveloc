@@ -1,0 +1,75 @@
+{
+ "_totals": {
+  "by_language": {
+   "C++": 21,
+   "C/C++": 4,
+   "Go": 18,
+   "Java": 20,
+   "Python": 18,
+   "Rust": 25,
+   "TypeScript": 42,
+   "Vue": 1
+  },
+  "dev": 30,
+  "tasks": 149,
+  "test": 119,
+  "test_split_sha256": "ec1e294b1c5f25170dd5a88a3fe0331a9f12256740c471325e99981a1de9f204"
+ },
+ "angular/angular": {
+  "candidates": 29,
+  "dev": 5,
+  "kept": 25,
+  "leak_path": 2,
+  "rejected": {
+   "duplicate issue": 1
+  },
+  "valid": 28
+ },
+ "apache/airflow": {
+  "candidates": 56,
+  "dev": 5,
+  "kept": 25,
+  "leak_path": 15,
+  "rejected": {
+   "gold file not uploaded by the bridge": 2,
+   "hunk mismatch vs snapshot": 2
+  },
+  "valid": 52
+ },
+ "go-gitea/gitea": {
+  "candidates": 24,
+  "dev": 5,
+  "kept": 24,
+  "leak_path": 7,
+  "rejected": {},
+  "valid": 24
+ },
+ "godotengine/godot": {
+  "candidates": 56,
+  "dev": 5,
+  "kept": 25,
+  "leak_path": 4,
+  "rejected": {
+   "hunk mismatch vs snapshot": 1
+  },
+  "valid": 55
+ },
+ "keycloak/keycloak": {
+  "candidates": 160,
+  "dev": 5,
+  "kept": 25,
+  "leak_path": 6,
+  "rejected": {},
+  "valid": 160
+ },
+ "zed-industries/zed": {
+  "candidates": 33,
+  "dev": 5,
+  "kept": 25,
+  "leak_path": 3,
+  "rejected": {
+   "hunk mismatch vs snapshot": 1
+  },
+  "valid": 32
+ }
+}

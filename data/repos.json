@@ -1,0 +1,54 @@
+{
+ "go-gitea/gitea": {
+  "snapshot": "4875bb3b2b4d9f2b1591b7b3b09d7517180fa7d4",
+  "language": "Go",
+  "exclude": [],
+  "snapshot_date": "2026-08-31T23:31:17Z"
+ },
+ "godotengine/godot": {
+  "snapshot": "29e8dfdd0a3b2bf593011402192dd4ea5907c40b",
+  "language": "C++",
+  "exclude": [
+   "thirdparty"
+  ],
+  "snapshot_date": "2026-08-31T23:21:33Z"
+ },
+ "keycloak/keycloak": {
+  "snapshot": "1e3472b77409c1c2d42d952f4329cbeac36dd703",
+  "language": "Java",
+  "exclude": [],
+  "snapshot_date": "2026-08-31T13:29:58Z"
+ },
+ "zed-industries/zed": {
+  "snapshot": "ce48461eaadd16c65c31f835511ab96bd3b6e746",
+  "language": "Rust",
+  "exclude": [],
+  "snapshot_date": "2026-08-31T18:47:00Z"
+ },
+ "apache/airflow": {
+  "snapshot": "c951918e0f5ceace7d4683440f2adf5344977eac",
+  "language": "Python",
+  "exclude": [],
+  "snapshot_date": "2026-08-31T21:07:06Z"
+ },
+ "vllm-project/vllm": {
+  "snapshot": "89df6fcb808febd88de0d08fb7437e9bddcaf81e",
+  "language": "Python",
+  "exclude": [],
+  "skip": true,
+  "snapshot_date": "2026-08-31T23:51:55Z"
+ },
+ "angular/angular": {
+  "snapshot": "87d38ec3ff6099d8d4ab9d157fef576a7a213d36",
+  "language": "TypeScript",
+  "exclude": [],
+  "snapshot_date": "2026-08-31T22:37:10Z"
+ },
+ "microsoft/vscode": {
+  "snapshot": "735c7376c1febaa709374e830fa9a2f0566c7092",
+  "language": "TypeScript",
+  "exclude": [],
+  "skip": true,
+  "snapshot_date": "2026-08-31T23:56:00Z"
+ }
+}
