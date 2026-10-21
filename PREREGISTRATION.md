@@ -110,3 +110,55 @@ analysis above.
   coordinator's request after the 6–10 s Helion hybrid-stage tail was diagnosed as complete-but-late. Stop if any CE
   call takes over 30 s, or if any CE reply is degraded (`degraded: true`, a `*_status` of timeout or dropped, or a
   dense channel reported off). Margins and readout are unchanged.
+
+## Amendment: pooled locate-vs-normal test on two repos (2026-10-21T20:09Z, before any run in this phase)
+
+**Question:** is `ce-skill-locate` non-inferior to `normal` once CE search is fast? This phase answers it on more
+prompts. The skill is unchanged: `audit/skills/locate/SKILL.md`, sha256 `d64429c1…`.
+
+**Backend, frozen for the whole phase.**
+- CE `mcp-indexer-http`: `bb48116d@sha256:8f9c8785…`.
+- Helion, all helix-lsm pods: `1e40402c@sha256:d93d1f9d…`.
+- Every receipt records both. A CE-arm run whose CE or Helion digest differs from the pin at its start or end is
+  invalid and is rerun.
+- The new arm is labelled `ce-skill-locate-fast`. The earlier gitea `ce-skill-locate` rows (same CE image, Helion
+  before 1e40402c) keep their label and are reported separately. They are not part of the pooled test.
+
+**Repos and prompts.** Prompts are read unmodified from the GrapeRoot checkout at cae330f3.
+
+| repo | snapshot | prompts | normal arm | ce-skill-locate-fast arm |
+|---|---|---|---|---|
+| go-gitea/gitea | 4875bb3b | `gitea_go_30` (30) | the existing 90 Sonnet runs, reused | 90 new runs |
+| calcom/cal.diy | 176037d0 | `typescript_monorepo_30` (30) | 90 new runs | 90 new runs, interleaved with normal |
+
+- On cal.diy, the folder and collection are named `liveloc-calcom__cal-diy-176037d0`.
+- Sonnet 5.5, 3 repeats, Claude Code 2.1.304, with the same flags, tools and isolated skill setup as before.
+- The cal.diy collection must pass `harness/freshness.py` at coverage ≥ 0.95, routed, before any CE run.
+
+**Judging.**
+- Both judges run at unchanged settings: Opus 5.5 at effort high, and GPT-6.1 with shell and web off.
+- The rubric changes only in naming the repo and language: "senior TypeScript engineer … (cal.com (calcom/cal.diy))"
+  for cal.diy. Gitea's rubric text is unchanged.
+- Report order stays balanced per (model, repeat, arm).
+
+**Primary analysis, pooled.**
+- Unit: one prompt, n = 60 (30 per repo).
+- Per unit, take the locate-fast − normal paired difference averaged over its 3 repeats, then the mean over the
+  60 units.
+- CI: 95% bootstrap, resampling prompts (10,000 draws, seed 7).
+- Two primary metrics, both Opus-judged, with margins unchanged from the earlier amendment:
+  - correctness score: margin **−0.5**;
+  - preference (+1 locate win / 0 tie / −1 normal win): margin **−0.2**.
+- Locate is non-inferior on a metric if its CI lower bound is above the margin. Both are reported. "Locate is
+  non-inferior" is claimed only if both pass.
+- Secondary, reported in the same table: GPT on the same metrics; Opus and GPT overall, specificity and false
+  claims; per-run cost, tokens, turns, Read calls and hallucinated-citation rate.
+- Holm-adjusted p values (exact sign test) are given across every row of the pooled table. Per-repo rows are reported
+  beside it as descriptive.
+
+**Stop rules.**
+- Stop if any CE call takes over 30 s, or if any CE reply is degraded (`degraded: true`, a `*_status` of timeout or
+  dropped, or a dense channel reported off).
+- A smoke on cal.diy runs first: 10 prompts x {normal, locate-fast} x repeat 1. These runs count toward the full set
+  because the config is identical.
+- CE latency per arm is reported: median, p90, max, and calls over 5 s.

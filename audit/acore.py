@@ -1,7 +1,8 @@
-"""Shared pieces of the GrapeRoot-Gitea audit A/B (clean-room; reuses harness/llcore.py).
+"""Shared pieces of the GrapeRoot audit A/B (clean-room; reuses harness/llcore.py).
 
-The prompt set is GrapeRoot's published Gitea prompts, read at runtime from a pinned clone and never copied here:
-  https://github.com/kunal12203/graperoot-benchmarks @ GRAPEROOT_SHA, prompts/gitea_go_30.json
+The prompt sets are GrapeRoot's published prompts, read at runtime from a pinned clone and never copied here:
+  https://github.com/kunal12203/graperoot-benchmarks @ GRAPEROOT_SHA, prompts/gitea_go_30.json (Gitea) and
+  prompts/typescript_monorepo_30.json (run on calcom/cal.diy). AUDIT_REPO selects the repo.
 """
 import json
 import os
@@ -14,15 +15,27 @@ import llcore  # noqa: E402
 
 GRAPEROOT_URL = "https://github.com/kunal12203/graperoot-benchmarks"
 GRAPEROOT_SHA = "cae330f3db8588acb7ae8a22bb3f019a1b4a153a"
-GRAPEROOT_PROMPTS = "prompts/gitea_go_30.json"
 GRAPEROOT_DIR = os.environ.get("AUDIT_GRAPEROOT", "/tmp/graperoot-eval/repo")
 
-REPO = "go-gitea/gitea"
-SNAPSHOT = llcore.load_json(llcore.REPOS)[REPO]["snapshot"]
+# One config per audited repo, chosen with AUDIT_REPO (default gitea: the original paths, run dirs and rubric text).
+# `name` is the LiveLoc-style key that names the tree folder (and so the CE collection); `source` is the GitHub repo
+# the snapshot tarball comes from (cal.diy's dot is kept out of the folder and collection name).
+AUDIT_REPOS = {
+    "gitea": {"name": "go-gitea/gitea", "source": "go-gitea/gitea", "snapshot": None, "prompts": "prompts/gitea_go_30.json",
+              "label": "Gitea", "lang": "Go", "dir_tag": ""},
+    "caldiy": {"name": "calcom/cal-diy", "source": "calcom/cal.diy", "snapshot": "176037d0afbe572f870a3c702985e7cd83fe6c0c",
+               "prompts": "prompts/typescript_monorepo_30.json", "label": "cal.com (calcom/cal.diy)", "lang": "TypeScript",
+               "dir_tag": "caldiy"},
+}
+AUDIT_REPO = os.environ.get("AUDIT_REPO", "gitea")
+CFG = AUDIT_REPOS[AUDIT_REPO]
+GRAPEROOT_PROMPTS = CFG["prompts"]
+REPO = CFG["name"]
+SNAPSHOT = CFG["snapshot"] or llcore.load_json(llcore.REPOS)[REPO]["snapshot"]
 TREE_NAME = llcore.tree_name(REPO, SNAPSHOT)
 TREE = llcore.tree_dir(REPO, SNAPSHOT)
-# kept apart from work/runs so run.py's spend/stats never see these; AUDIT_TAG=smoke selects the smoke batch's dirs
-_TAG = os.environ.get("AUDIT_TAG", "")
+# kept apart from work/runs so run.py's spend/stats never see these; AUDIT_TAG=smoke selects a smoke batch's dirs
+_TAG = "-".join(x for x in (CFG["dir_tag"], os.environ.get("AUDIT_TAG", "")) if x)
 RUNS = os.path.join(llcore.WORK, "audit-runs" + (f"-{_TAG}" if _TAG else ""))
 JUDGE = os.path.join(llcore.WORK, "audit-judge" + (f"-{_TAG}" if _TAG else ""))
 
@@ -64,7 +77,7 @@ def prompt_text(item):
 
 
 def collection():
-    return llcore.load_json(llcore.COLLECTIONS)[TREE_NAME]["collection"]
+    return llcore.load_json(llcore.COLLECTIONS).get(TREE_NAME, {}).get("collection")
 
 
 def _cost(rates, inp, w5, w1, read, out):
@@ -209,3 +222,18 @@ def ce_calls(trace_path):
                         o, ok = {}, not txt.lower().startswith(("error", "mcp error", "mcp-remote: error"))
                     out.append((name, round(t - t0, 2), snip, bool(b.get("is_error")) or ok is False, _degraded(o)))
     return out
+
+
+
+
+def helion_digests():
+    """Sorted unique image digests of the running Helion (helix-lsm) pods, or [] if unknown (read-only kubectl)."""
+    try:
+        out = subprocess.run(["kubectl", *(["--context", llcore.KUBE_CONTEXT] if llcore.KUBE_CONTEXT else []), "-n", llcore.KUBE_NS,
+                              "get", "pods", "--field-selector=status.phase=Running", "-o",
+                              "jsonpath={range .items[*]}{.metadata.name}{' '}{.status.containerStatuses[*].imageID}{'\\n'}{end}",
+                              "--request-timeout=20s"], capture_output=True, text=True, timeout=40)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return sorted({d.split("@")[-1] for line in out.stdout.splitlines() if line.startswith("helix-lsm")
+                   for d in line.split()[1:] if "sha256:" in d})
