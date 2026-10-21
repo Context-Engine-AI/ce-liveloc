@@ -30,7 +30,8 @@ def main():
             "`routers/api/v1/api.go:30-31`, `33` and `35` chain.\n"
             "`routers/api/v1/api.go:41`. In `services/x.go` (`:42`) the anchor moved; cfg.Key and ctx.JSON are not files.\n"
             "`lib/big.go:900`, `404` and `403` are status codes; `lib/big.go:910`, `950` chain; buf[:64] is a slice.\n"
-            "Root dotfile .golangci.yml:2 exists.")
+            "Root dotfile .golangci.yml:2 exists. `lib/big.go:700` then a/dup.go:3, b/dup.go:4, and later bare dup.go:25"
+            " fits only b/dup.go even though a/dup.go was cited last.")
     r = cites.check(text, d)
     got = {(raw, a, b): (st, p) for raw, a, b, st, p in r["rows"]}
     want = {
@@ -62,11 +63,15 @@ def main():
         ("lib/big.go", 910, None): ("ok", "lib/big.go"),
         ("lib/big.go", 950, None): ("ok", "lib/big.go"),
         (".golangci.yml", 2, None): ("ok", ".golangci.yml"),
+        ("lib/big.go", 700, None): ("ok", "lib/big.go"),
+        ("a/dup.go", 3, None): ("ok", "a/dup.go"),
+        ("b/dup.go", 4, None): ("ok", "b/dup.go"),
+        ("dup.go", 25, None): ("ok", "b/dup.go"),
     }
     # `:9` repeats ./models/user.go:L9 (same resolved citation) so it is not a new row
     assert got == want, sorted(set(got.items()) ^ set(want.items()))
-    assert (r["n"], r["ok"], r["hallucinated"], r["ambiguous"]) == (28, 24, 3, 1), r
-    assert abs(r["halluc_rate"] - 3 / 27) < 1e-9 and abs(r["evidence_share"] - 24 / 28) < 1e-9
+    assert (r["n"], r["ok"], r["hallucinated"], r["ambiguous"]) == (32, 28, 3, 1), r
+    assert abs(r["halluc_rate"] - 3 / 31) < 1e-9 and abs(r["evidence_share"] - 28 / 32) < 1e-9
     assert cites.check("no citations here", d)["halluc_rate"] is None
 
     ev, dropped = cites.evidence(d, r["rows"], [], cap_chars=100_000)

@@ -16,6 +16,7 @@ import statistics as st
 
 import acore
 import judge
+import run_arms
 from stats import boot_ci, holm  # harness/stats.py
 
 
@@ -33,7 +34,7 @@ def load_judgments(model):
         if f.endswith(".json") and f"__{model}__" in f:
             j = json.load(open(os.path.join(acore.JUDGE, f)))
             if j.get("verdict"):
-                out[(j["id"], j["rep"], j["judge"])] = j
+                out[(j["id"], j["rep"], j["judge"], j.get("treatment", "ce"))] = j
     return out
 
 
@@ -47,15 +48,15 @@ RUN_METRICS = [  # (label, getter); None = undefined for that run
     ("hallucinated-citation rate", lambda r: r["cites"]["halluc_rate"]),
     ("citations (descriptive)", lambda r: r["cites"]["n"]),
 ]
-WIN = {"ce": 1, "tie": 0, "normal": -1}
-JUDGE_METRICS = [  # headline first; counts are descriptive, not quality
-    ("preference (+1 ce win, −1 normal win)", lambda j: WIN[j["winner_arm"]]),
-    ("overall score (1–10)", lambda j: j["by_arm"]["ce"]["overall"] - j["by_arm"]["normal"]["overall"]),
-    ("correctness score (1–10)", lambda j: j["by_arm"]["ce"]["correctness"] - j["by_arm"]["normal"]["correctness"]),
-    ("specificity score (1–10)", lambda j: j["by_arm"]["ce"]["specificity"] - j["by_arm"]["normal"]["specificity"]),
-    ("false claims per answer", lambda j: j["by_arm"]["ce"]["false"] - j["by_arm"]["normal"]["false"]),
-    ("verified findings per answer (descriptive)", lambda j: j["by_arm"]["ce"]["verified"] - j["by_arm"]["normal"]["verified"]),
+JUDGE_METRICS = [  # (label, getter(j, treatment)); headline first, counts are descriptive
+    ("preference (+1 treatment win, −1 normal win)", lambda j, t: {t: 1, "tie": 0, "normal": -1}[j["winner_arm"]]),
+    ("overall score (1–10)", lambda j, t: j["by_arm"][t]["overall"] - j["by_arm"]["normal"]["overall"]),
+    ("correctness score (1–10)", lambda j, t: j["by_arm"][t]["correctness"] - j["by_arm"]["normal"]["correctness"]),
+    ("specificity score (1–10)", lambda j, t: j["by_arm"][t]["specificity"] - j["by_arm"]["normal"]["specificity"]),
+    ("false claims per answer", lambda j, t: j["by_arm"][t]["false"] - j["by_arm"]["normal"]["false"]),
+    ("verified findings per answer (descriptive)", lambda j, t: j["by_arm"][t]["verified"] - j["by_arm"]["normal"]["verified"]),
 ]
+ARMS = run_arms.ARMS
 
 
 def paired(by_prompt):
@@ -77,20 +78,22 @@ def model_section(model, ids, judges):
     L = [f"## {model} (`{acore.MODELS[model]}`)\n"]
     if not runs:
         return L + ["No valid runs yet.\n"]
-    pairs = sorted({(i, rep) for i, _a, rep in runs if (i, "normal", rep) in runs and (i, "ce", rep) in runs})
-    unpaired = sorted(f"#{i} r{rep} {a}" for i, a, rep in runs if (i, rep) not in pairs)
-    mism = [f"#{i} r{rep}" for i, rep in pairs if (runs[(i, "normal", rep)]["init"].get("claude_code_version"),
-                                                   runs[(i, "normal", rep)]["init"].get("model"))
-            != (runs[(i, "ce", rep)]["init"].get("claude_code_version"), runs[(i, "ce", rep)]["init"].get("model"))]
-    L.append(f"Pairs: {len(pairs)} over {len({i for i, _ in pairs})} prompts. Unpaired valid runs (excluded): "
-             f"{', '.join(unpaired) or 'none'}. Pairs whose two runs differ in Claude Code version or model: "
-             f"{', '.join(mism) or 'none'}.\n")
+    arms = [a for a in ARMS if any(k[1] == a for k in runs)]
+    treats = [a for a in arms if a != "normal"]
+    keys = sorted({(i, rep) for i, _a, rep in runs})
+    full = [k for k in keys if all((k[0], a, k[1]) in runs for a in arms)]
+    partial = sorted(f"#{i} r{rep} {a}" for i, a, rep in runs if (i, rep) not in full)
+    mism = [f"#{i} r{rep}" for i, rep in full if len({(runs[(i, a, rep)]["init"].get("claude_code_version"),
+                                                         runs[(i, a, rep)]["init"].get("model")) for a in arms}) > 1]
+    L.append(f"Complete sets (every arm present): {len(full)} over {len({i for i, _ in full})} prompts. Valid runs outside a "
+             f"complete set (excluded from descriptives, still used in any pair they complete): {', '.join(partial) or 'none'}. "
+             f"Sets whose runs differ in Claude Code version or model: {', '.join(mism) or 'none'}.\n")
     L.append("| arm | runs | turns mean (median) | total tokens mean | input / cache-write / cache-read / output (mean) | "
-             "$/run | $ total | wall s mean | tool calls/run | CE calls/run | runs at a ceiling | extra attempts | "
-             "citations/run | cited regions found (evidence share) | hallucinated citations (pooled) |")
-    L.append("|---|" + "---|" * 14)
-    for arm in ("normal", "ce"):
-        rs = [runs[(i, arm, rep)] for i, rep in pairs]
+             "$/run | $ total | wall s mean | tool calls/run | CE calls/run | runs calling CE | Skill calls/run | "
+             "runs at a ceiling | extra attempts | citations/run | cited regions found | hallucinated citations (pooled) |")
+    L.append("|---|" + "---|" * 16)
+    for arm in arms:
+        rs = [runs[(i, arm, rep)] for i, rep in full]
         if not rs:
             continue
         u = {k: st.mean(r["usage"][k] for r in rs) for k in rs[0]["usage"]}
@@ -99,58 +102,63 @@ def model_section(model, ids, judges):
                  f"{st.mean(r['total_tokens'] for r in rs):,.0f} | {u['input_tokens']:,.0f} / {u['cache_creation_input_tokens']:,.0f} / "
                  f"{u['cache_read_input_tokens']:,.0f} / {u['output_tokens']:,.0f} | {st.mean(r['cost_bedrock'] for r in rs):.4f} | "
                  f"{sum(r['cost_bedrock'] for r in rs):.2f} | {st.mean(r['wall_s'] for r in rs):.0f} | "
-                 f"{st.mean(r['tool_calls'] for r in rs):.1f} | {st.mean(r['ce_calls'] for r in rs):.1f} | "
+                 f"{st.mean(r['tool_calls'] for r in rs):.1f} | {st.mean(r['ce_calls'] for r in rs):.2f} | "
+                 f"{sum(1 for r in rs if r['ce_calls'])}/{len(rs)} | {st.mean(r.get('skill_calls') or 0 for r in rs):.2f} | "
                  f"{sum(1 for r in rs if r['hit_ceiling'])} | {sum((r.get('attempt') or 1) - 1 for r in rs)} | "
                  f"{c['n'] / len(rs):.1f} | {c['ok'] / c['n'] if c['n'] else 0:.3f} | "
                  f"{c['hallucinated']}/{c['n'] - c['ambiguous']} = "
                  f"{c['hallucinated'] / (c['n'] - c['ambiguous']) if c['n'] - c['ambiguous'] else 0:.3f} |")
     tools = sorted({t for r in runs.values() for t in r["tool_calls_by_name"]})
-    L.append("\nTool calls per run by tool (mean over paired runs):\n")
+    L.append("\nTool calls per run by tool (mean over complete sets):\n")
     L.append("| arm | " + " | ".join(t.replace("mcp__context-engine__", "ce:") for t in tools) + " |")
     L.append("|---|" + "---|" * len(tools))
-    for arm in ("normal", "ce"):
-        rs = [runs[(i, arm, rep)] for i, rep in pairs]
+    for arm in arms:
+        rs = [runs[(i, arm, rep)] for i, rep in full]
         if rs:
             L.append(f"| {arm} | " + " | ".join(f"{st.mean(r['tool_calls_by_name'].get(t, 0) for r in rs):.2f}" for t in tools) + " |")
+    pairs = {t: sorted({(i, rep) for i, a, rep in runs if a == t and (i, "normal", rep) in runs}) for t in treats}
     if js:
-        L.append("\nBlind pairwise judges (order balanced: Opus sees ce as report X in half the pairs per repeat, GPT sees "
-                 "every pair in the opposite order):\n")
-        L.append("| judge | pairs | ce wins | ties | normal wins | report-X wins (position check) | overall ce / normal | "
-                 "correctness ce / normal | false claims/answer ce / normal | verified/answer ce / normal |")
-        L.append("|---|---|---|---|---|---|---|---|---|---|")
-        for jn in judges:
-            jj = [js[(i, rep, jn)] for i, rep in pairs if (i, rep, jn) in js]
-            if not jj:
-                continue
-            w = [j["winner_arm"] for j in jj]
-            m = lambda arm, k: st.mean(j["by_arm"][arm][k] for j in jj)  # noqa: E731
-            L.append(f"| {jn} ({jj[0]['judge_model']}) | {len(jj)} | {w.count('ce')} | {w.count('tie')} | {w.count('normal')} | "
-                     f"{sum(1 for j in jj if j['verdict']['winner'] == 'X')} | {m('ce', 'overall'):.2f} / {m('normal', 'overall'):.2f} | "
-                     f"{m('ce', 'correctness'):.2f} / {m('normal', 'correctness'):.2f} | "
-                     f"{m('ce', 'false'):.2f} / {m('normal', 'false'):.2f} | {m('ce', 'verified'):.2f} / {m('normal', 'verified'):.2f} |")
-        if len(judges) > 1:
-            both = [(js[(i, rep, judges[0])]["winner_arm"], js[(i, rep, judges[1])]["winner_arm"])
-                    for i, rep in pairs if (i, rep, judges[0]) in js and (i, rep, judges[1]) in js]
-            if both:
-                L.append(f"\nThe two judges pick the same winner in {sum(a == b for a, b in both)}/{len(both)} pairs.")
+        L.append("\nBlind pairwise judges, each treatment arm against normal on its own pairs (order balanced: Opus sees the "
+                 "treatment as report X in half the pairs per repeat, GPT sees every pair in the opposite order):\n")
+        L.append("| judge | treatment | pairs | treatment wins | ties | normal wins | report-X wins (position check) | "
+                 "overall t / n | correctness t / n | false claims/answer t / n | verified/answer t / n |")
+        L.append("|---|---|---|---|---|---|---|---|---|---|---|")
+        for t in treats:
+            for jn in judges:
+                jj = [js[(i, rep, jn, t)] for i, rep in pairs[t] if (i, rep, jn, t) in js]
+                if not jj:
+                    continue
+                w = [j["winner_arm"] for j in jj]
+                m = lambda arm, k: st.mean(j["by_arm"][arm][k] for j in jj)  # noqa: E731
+                L.append(f"| {jn} ({jj[0]['judge_model']}) | {t} | {len(jj)} | {w.count(t)} | {w.count('tie')} | {w.count('normal')} | "
+                         f"{sum(1 for j in jj if j['verdict']['winner'] == 'X')} | {m(t, 'overall'):.2f} / {m('normal', 'overall'):.2f} | "
+                         f"{m(t, 'correctness'):.2f} / {m('normal', 'correctness'):.2f} | {m(t, 'false'):.2f} / {m('normal', 'false'):.2f} | "
+                         f"{m(t, 'verified'):.2f} / {m('normal', 'verified'):.2f} |")
+            if len(judges) > 1:
+                both = [(js[(i, rep, judges[0], t)]["winner_arm"], js[(i, rep, judges[1], t)]["winner_arm"])
+                        for i, rep in pairs[t] if (i, rep, judges[0], t) in js and (i, rep, judges[1], t) in js]
+                if both:
+                    L.append(f"\n{t}: the two judges pick the same winner in {sum(a == b for a, b in both)}/{len(both)} pairs.")
     rows = []
-    for label, get in RUN_METRICS:
-        d = {}
-        for i, rep in pairs:
-            a, b = get(runs[(i, "ce", rep)]), get(runs[(i, "normal", rep)])
-            if a is not None and b is not None:
-                d.setdefault(i, []).append(a - b)
-        rows.append((label, paired(d)))
-    for jn in judges:
-        for label, get in JUDGE_METRICS:
+    for t in treats:
+        for label, get in RUN_METRICS:
             d = {}
-            for i, rep in pairs:
-                if (i, rep, jn) in js:
-                    d.setdefault(i, []).append(get(js[(i, rep, jn)]))
-            if d:
-                rows.append((f"{jn}: {label}", paired(d)))
+            for i, rep in pairs[t]:
+                a, b = get(runs[(i, t, rep)]), get(runs[(i, "normal", rep)])
+                if a is not None and b is not None:
+                    d.setdefault(i, []).append(a - b)
+            rows.append((f"{t} − normal: {label}", paired(d)))
+        for jn in judges:
+            for label, get in JUDGE_METRICS:
+                d = {}
+                for i, rep in pairs[t]:
+                    if (i, rep, jn, t) in js:
+                        d.setdefault(i, []).append(get(js[(i, rep, jn, t)], t))
+                if d:
+                    rows.append((f"{t} − normal: {jn}: {label}", paired(d)))
     adj = holm([r[1][4] if r[1] else 1.0 for r in rows])
-    L.append("\nPaired deltas, ce − normal (n = prompts; repeats averaged within a prompt):\n")
+    L.append("\nPaired deltas, treatment − normal (n = prompts; repeats averaged within a prompt; Holm across every row of "
+             "this table):\n")
     L.append("| metric | n | mean Δ | 95% CI | sign-test p | Holm p |")
     L.append("|---|---|---|---|---|---|")
     for (label, p), ph in zip(rows, adj):
@@ -199,6 +207,17 @@ def main():
          "server, i.e. its tool definitions and the server's own initialize instructions "
          + (f"({len(server.get('instructions') or '')} chars, see `-ce-server.json`)." if server.get("serverInfo")
             else "(not captured).") + "",
+         "- Skill arms (added after the smoke run): `ce` + what the VS Code extension installs with `mcpClaudeSkillEnabled` "
+         "(installSkillClaude): the skill folder copied verbatim plus the line \"# Important, always use skill "
+         "`context-engine`\" prepended to CLAUDE.md, both in a fresh per-run `CLAUDE_CONFIG_DIR` loaded with "
+         "`--setting-sources user`, plus the Skill tool; a run where Claude Code did not list the skill is invalid. "
+         + " ".join(f"`{arm}`: SKILL.md sha256 `{sha[:16]}…` from `{os.path.basename(repo)}@{commit}`." for arm, (repo, commit, _f, sha)
+                    in run_arms.SKILLS.items())
+         + " **`ce-skill-shipped` is what the extension ships (Context-Engine-Extension 187f674, release 2.3.27). "
+         "`ce-skill-stale` is an older copy from the retired monorepo, run by mistake first; it is reported as a finding "
+         "about that file, not as the shipped product.** It has no opening frontmatter `---` and says \"NEVER use Read "
+         "File or grep for exploration\". `ce-skill-shipped` ran on Sonnet only, after the other arms, so its wall time is "
+         "not comparable; its tokens, cost and quality are paired with the same normal runs.",
          "- Scoring: a hallucinated citation is a cited file missing from the pinned tree or a line past its end (`audit/cites.py`); "
          "the judges see both answers (tool mentions scrubbed) plus the pinned code at every cited location, pooled, and grade "
          "verified correctness, specificity and false claims with a rubric that gives volume no credit (`audit/judge.py`).\n"]

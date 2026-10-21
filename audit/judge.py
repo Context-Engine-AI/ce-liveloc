@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Blind pairwise judging of normal vs ce answers to the same prompt, by two judges from different model families.
 
-Usage: judge.py --model sonnet55 [--judges opus,gpt] [--smoke | --ids 1,4] [--repeats 3] [--jobs 4] [--cap 450]
+Usage: judge.py --model sonnet55 [--vs ce,ce-skill] [--judges opus,gpt] [--smoke | --ids 1,4] [--repeats 3] [--jobs 4] [--cap 450]
+Each treatment arm in --vs is judged against normal on its own pairs (normal vs ce, normal vs ce-skill).
 
 Per (prompt, repeat) with a valid run in both arms: the two answers go in as report X / Y with tool and CE mentions
 scrubbed (path and citation tokens are protected first). Order is balanced: per (model, repeat) a seeded half of
@@ -105,7 +106,7 @@ def parse_json(text):
 
 
 def judge_opus(body):
-    cmd = ["claude", "-p", "--system-prompt", RUBRIC, "--json-schema", json.dumps(SCHEMA), "--tools", "",
+    cmd = [acore.CLAUDE_BIN, "-p", "--system-prompt", RUBRIC, "--json-schema", json.dumps(SCHEMA), "--tools", "",
            "--setting-sources", "", "--strict-mcp-config", "--mcp-config", llcore.NO_MCP_CFG, "--model", acore.JUDGE_OPUS,
            "--effort", "high", "--output-format", "json", "--no-session-persistence"]
     env = {**os.environ, **llcore.bedrock_env(), "DISABLE_AUTOUPDATER": "1"}
@@ -170,24 +171,28 @@ def load_runs(model):
     for f in os.listdir(acore.RUNS) if os.path.isdir(acore.RUNS) else []:
         if f.endswith(".json") and ".invalid-" not in f and not f.startswith("_"):
             r = json.load(open(os.path.join(acore.RUNS, f)))
-            if r["model"] == model and r.get("ok") and r.get("digest_valid") is not False and r.get("ce_connected") is not False:
+            if r["model"] == model and r.get("ok") and r.get("digest_valid") is not False \
+                    and r.get("ce_connected") is not False and r.get("skill_loaded") is not False:
                 c = cites.check(r["answer"])  # always re-scored with the current parser (deterministic)
                 r["cites"], r["cite_rows"] = {k: v for k, v in c.items() if k != "rows"}, c["rows"]
                 runs[(r["id"], r["arm"], r["rep"])] = r
     return runs
 
 
-def ce_is_x(ids, pid, model, rep, judge):
-    """Balanced order: a seeded half of the prompts per (model, repeat) show ce as X to Opus; GPT gets the opposite."""
-    ranked = sorted(ids, key=lambda i: hashlib.sha256(f"{i}:{model}:{rep}".encode()).hexdigest())
+def ce_is_x(ids, pid, model, rep, judge, arm="ce"):
+    """Balanced order: a seeded half of the prompts per (model, repeat, arm) show the treatment arm as X to Opus;
+    GPT gets the opposite. The ce seed is unchanged from the preregistered two-arm design."""
+    # ce-skill-stale keeps the seed it was judged with as "ce-skill", so its balanced order and packets are unchanged
+    tag = "" if arm == "ce" else ":ce-skill" if arm == "ce-skill-stale" else f":{arm}"
+    ranked = sorted(ids, key=lambda i: hashlib.sha256(f"{i}:{model}:{rep}{tag}".encode()).hexdigest())
     first = pid in ranked[:len(ranked) // 2] or bool(len(ranked) % 2 and pid == ranked[len(ranked) // 2]
-                                                      and random.Random(f"{model}:{rep}").random() < 0.5)
+                                                      and random.Random(f"{model}:{rep}{tag}").random() < 0.5)
     return first if judge == "opus" else not first
 
 
-def judge_pair(item, model, rep, rn, rc, judge, gpt_model, ids):
-    base = os.path.join(acore.JUDGE, f"{item['id']:02d}__{model}__r{rep}__{judge}")
-    cex = ce_is_x(ids, item["id"], model, rep, judge)
+def judge_pair(item, model, rep, rn, rc, judge, gpt_model, ids, arm="ce"):
+    base = os.path.join(acore.JUDGE, f"{item['id']:02d}__{model}__r{rep}__{judge}" + ("" if arm == "ce" else f"__{arm}"))
+    cex = ce_is_x(ids, item["id"], model, rep, judge, arm)
     rx, ry = (rc, rn) if cex else (rn, rc)
     body, dropped = packet(item, rx, ry)
     sha = hashlib.sha256(body.encode()).hexdigest()[:16]
@@ -199,12 +204,12 @@ def judge_pair(item, model, rep, rn, rc, judge, gpt_model, ids):
     verdict, meta = judge_opus(body) if judge == "opus" else judge_gpt(body, f"{item['id']}-{model}-{rep}")
     if judge == "gpt" and meta.get("commands_run"):  # must judge from the packet alone
         verdict = None
-    side = {"x": "ce" if ce_is_x_ else "normal", "y": "normal" if ce_is_x_ else "ce"}
-    rec = {"id": item["id"], "model": model, "rep": rep, "judge": judge,
-           "judge_model": acore.JUDGE_OPUS if judge == "opus" else gpt_model, "ce_is_x": ce_is_x_,
+    side = {"x": arm if ce_is_x_ else "normal", "y": "normal" if ce_is_x_ else arm}
+    rec = {"id": item["id"], "model": model, "rep": rep, "judge": judge, "treatment": arm,
+           "judge_model": acore.JUDGE_OPUS if judge == "opus" else gpt_model, "treat_is_x": ce_is_x_,
            "packet_sha256": sha, "packet_chars": len(body), "attempts": prev.get("attempts", 0) + 1,
            "evidence_dropped": dropped, "wall_s": round(time.time() - t0, 1), "verdict": verdict,
-           "runs": {"normal": f"{rn['id']:02d}__normal__{model}__r{rep}", "ce": f"{rc['id']:02d}__ce__{model}__r{rep}"},
+           "runs": {"normal": f"{rn['id']:02d}__normal__{model}__r{rep}", arm: f"{rc['id']:02d}__{arm}__{model}__r{rep}"},
            # every attempt was paid for, including a judgment replaced after a packet change
            "cost_bedrock": (prev.get("cost_bedrock") or 0.0) + meta.pop("cost_bedrock", 0.0), **meta}
     if verdict:
@@ -218,6 +223,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, choices=sorted(acore.MODELS))
     ap.add_argument("--judges", default="opus,gpt")
+    ap.add_argument("--vs", default="ce", help="treatment arms, each judged against normal (e.g. ce,ce-skill-shipped)")
     ap.add_argument("--ids")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--repeats", type=int, default=1)
@@ -234,30 +240,30 @@ def main():
     os.makedirs(JUDGE_CWD, exist_ok=True)
     gpt_model = codex_home() if "gpt" in judges else None
     runs = load_runs(a.model)
-    pairs = [(prompts[i], r) for r in range(1, a.repeats + 1) for i in ids
-             if (i, "normal", r) in runs and (i, "ce", r) in runs]
-    print(f"{len(pairs)} pairs x {judges} model={a.model} spent=${acore.spent():.2f} cap=${a.cap}", flush=True)
+    pairs = [(prompts[i], r, arm) for arm in a.vs.split(",") for r in range(1, a.repeats + 1) for i in ids
+             if (i, "normal", r) in runs and (i, arm, r) in runs]
+    print(f"{len(pairs)} pairs x {judges} model={a.model} vs={a.vs} spent=${acore.spent():.2f} cap=${a.cap}", flush=True)
     lock = threading.Lock()
 
-    def job(item, rep, judge):
+    def job(item, rep, arm, judge):
         if judge == "opus":
             with lock:
                 if acore.spent() + 0.5 > a.cap:
                     raise RuntimeError("cost cap reached")
-        return judge_pair(item, a.model, rep, runs[(item["id"], "normal", rep)], runs[(item["id"], "ce", rep)], judge,
-                          gpt_model, ids)  # order ranked over the requested ids, so a late rerun moves no other pair
+        return judge_pair(item, a.model, rep, runs[(item["id"], "normal", rep)], runs[(item["id"], arm, rep)], judge,
+                          gpt_model, ids, arm)  # order ranked over the requested ids, so a late rerun moves no other pair
 
     with cf.ThreadPoolExecutor(a.jobs) as ex:
-        futs = {ex.submit(job, item, rep, j): (item["id"], rep, j) for item, rep in pairs for j in judges}
+        futs = {ex.submit(job, item, rep, arm, j): (item["id"], rep, arm, j) for item, rep, arm in pairs for j in judges}
         for f in cf.as_completed(futs):
-            pid, rep, j = futs[f]
+            pid, rep, arm, j = futs[f]
             try:
                 r = f.result()
-                print(f"#{pid:02d} r{rep} {j:4s} winner={r.get('winner_arm')} ce_is_x={r['ce_is_x']} "
+                print(f"#{pid:02d} r{rep} {arm:8s} {j:4s} winner={r.get('winner_arm')} treat_is_x={r.get('treat_is_x', r.get('ce_is_x'))} "
                       f"chars={r['packet_chars']} ${r.get('cost_bedrock') or 0:.3f} {r['wall_s']}s "
                       f"cmds={r.get('commands_run', 0)}", flush=True)
             except Exception as e:  # noqa: BLE001
-                print(f"EXC #{pid:02d} r{rep} {j}: {e!r}", flush=True)
+                print(f"EXC #{pid:02d} r{rep} {arm} {j}: {e!r}", flush=True)
     print(f"done; spent=${acore.spent():.2f}", flush=True)
 
 

@@ -27,6 +27,10 @@ RUNS = os.path.join(llcore.WORK, "audit-runs" + (f"-{_TAG}" if _TAG else ""))
 JUDGE = os.path.join(llcore.WORK, "audit-judge" + (f"-{_TAG}" if _TAG else ""))
 
 MODELS = {"sonnet55": "us.anthropic.claude-sonnet-5-5", "haiku55": "us.anthropic.claude-haiku-5-5"}
+# pinned Claude Code binary: the installed `claude` auto-updated 2.1.304 -> 2.1.306 mid-batch (11:40Z), so later runs
+# call the 2.1.304 build directly; a run recorded on another version is invalid and reruns
+CLAUDE_VERSION = os.environ.get("AUDIT_CLAUDE_VERSION", "2.1.304")
+CLAUDE_BIN = os.path.expanduser(f"~/.local/share/claude/versions/{CLAUDE_VERSION}")
 JUDGE_OPUS = "us.anthropic.claude-opus-5-5"
 # both arms: the GrapeRoot prompt verbatim + this one line
 CITE_LINE = "Cite each finding as path:line (path relative to the repository root)."
@@ -74,7 +78,8 @@ def run_cost(events, main_model):
     Input-side tokens come per call from assistant events (deduped by message id, last event wins); streamed
     output counts there are partial, so output comes from the result totals.
     """
-    res = next((e for e in events if e.get("type") == "result"), None) or {}
+    results = [e for e in events if e.get("type") == "result"]
+    res = results[-1] if results else {}
     calls = {}
     for e in events:
         if e.get("type") == "assistant":
@@ -93,7 +98,8 @@ def run_cost(events, main_model):
         big = main_model.endswith("haiku-5-5") and inp + w + rd > 100_000
         over += big
         total += _cost(RATES[main_model + (">100k" if big else "")], inp, w * (1 - f1h), w * f1h, rd, 0)
-    out = usage.get("output_tokens") or 0
+    # a background task finishing after the answer adds a result segment; segment usages add up
+    out = sum((r.get("usage") or {}).get("output_tokens") or 0 for r in results) if results else usage.get("output_tokens") or 0
     # shortcut: output per call is not in the trace, so it is split over calls in proportion to the 100k tiers
     frac_big = over / len(calls) if calls else 0.0
     total += _cost(RATES[main_model], 0, 0, 0, 0, out * (1 - frac_big))

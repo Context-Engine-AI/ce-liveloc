@@ -1,0 +1,9 @@
+{
+ "captured_at": "2026-10-21T10:21:47Z",
+ "instructions": "Context Engine searches this workspace's indexed code (semantic + lexical hybrid, reranked, with a symbol graph). For any codebase question or code lookup, by behavior or by identifier (where X is implemented, how X works, the code behind a behavior, error, config key or endpoint, every place that does Y), call repo_search (or search) first instead of Grep/Read loops. One call returns the top matches as verified source with exact line ranges, so do not re-read them; other hits are refs (path, lines, symbol) to open only if needed. Before editing, fetch every involved symbol in one call (repo_search queries=[...]). For how/why questions spanning several files, call context_answer for a cited explanation; when the code may live in another indexed repo (client and server, shared libraries), use cross_repo_search. Grep stays the right tool to confirm an exact literal in a known file, for counts, and for files outside the index. If these tools are listed as deferred, load them with ToolSearch before your first code search. Use symbol_graph for definitions, callers, callees and importers (several names: A|B|C), and graph_query for multi-hop impact across the code graph. Before a rename or signature change, call symbol_graph query_type=references to get every site to edit. Pass the workspace collection, or rely on the session default from set_session_defaults. Repeat a search only after learning something new.",
+ "serverInfo": {
+  "name": "qdrant-indexer-mcp",
+  "title": "qdrant-indexer-mcp",
+  "version": "1.0.0"
+ }
+}

@@ -74,8 +74,9 @@ def parse(text, tree=acore.TREE):
     return out
 
 
-def resolve(tree, raw, cited):
-    """-> (resolved path or '', candidates when ambiguous). `cited`: paths this answer resolved earlier."""
+def resolve(tree, raw, cited, line=None):
+    """-> (resolved path or '', candidates when ambiguous). `cited`: paths this answer resolved earlier; among those,
+    the most recent one the line fits wins (so a later bare `api.go:969` follows `routers/api/v1/api.go:969`)."""
     p = treesit.resolve(tree, raw) if "/" in raw else ""
     if p:
         return p, []
@@ -85,7 +86,8 @@ def resolve(tree, raw, cited):
     if len(cands) == 1:
         return cands[0], []
     mine = [q for q in reversed(cited) if q in cands]
-    return (mine[0], []) if mine else ("", cands)
+    fits = [q for q in mine if line is None or line <= nlines(os.path.join(tree, q))]
+    return ((fits or mine)[0], []) if mine else ("", cands)
 
 
 def check(text, tree=acore.TREE):
@@ -99,7 +101,7 @@ def check(text, tree=acore.TREE):
             continue
         if tok[0] == "cite":
             raw, a, b = tok[1:]
-            p, cands = resolve(tree, raw, cited)
+            p, cands = resolve(tree, raw, cited, a)
             last = (raw, p, cands)
         else:
             if last is None or (tok[0] == "follow" and abs(tok[1] - tok[3]) > FOLLOW_SPAN):

@@ -6,6 +6,13 @@ Usage: run_arms.py --model sonnet55|haiku55 [--arms normal,ce] [--smoke | --ids 
 Arms (prompt = GrapeRoot's prompt verbatim + acore.CITE_LINE; no system-prompt additions in either arm):
   normal  built-in Read/Grep/Glob/Bash only, no MCP servers
   ce      the same + the Context Engine MCP (stdio proxy; collection routed from the cwd mapping)
+  ce-skill-*  ce + what the VS Code extension installs with mcpClaudeSkillEnabled (installSkillClaude): the skill folder
+          skills/claude/context-engine/ copied verbatim to <config>/skills/context-engine/ and the line
+          "# Important, always use skill `context-engine`" + blank line prepended to <config>/CLAUDE.md (empty here, as
+          the other arms load no CLAUDE.md). <config> is a fresh per-run CLAUDE_CONFIG_DIR, loaded via
+          --setting-sources user, so ~/.claude is never read or written; the Skill tool is added to its tools.
+          ce-skill-shipped: the skill the extension ships (Context-Engine-Extension 187f674 = release 2.3.27).
+          ce-skill-stale:   an older copy from the retired monorepo (Context-Engine 24d0ff49), run first by mistake.
 Both: --setting-sources "" (no CLAUDE.md/AGENTS.md, user hooks or plugins), --strict-mcp-config, cwd = the pinned
 Gitea snapshot tree, harness/run.py's deny list (no network, git, edits, interpreters). Ceilings are identical safety
 limits the agent is never told about: --max-turns 150, --max-budget-usd 8, 45 min wall; a run that hits one is a
@@ -15,6 +22,7 @@ CE MCP server did not connect or whose CE build differs from the batch's pinned 
 scored failure. RUNS/_batch.json pins the CE build and the tree manifest across invocations.
 """
 import re
+import shutil
 import argparse
 import concurrent.futures as cf
 import hashlib
@@ -30,17 +38,28 @@ from acore import llcore
 import run as liveloc  # harness/run.py: BUILTIN, DENY, CE_TOOLS, CE_DENY
 
 MAX_TURNS, MAX_BUDGET, TIMEOUT_S = 150, 8.0, 2700
+SKILLS = {  # arm -> (git repo, commit, skill folder, SKILL.md sha256)
+    "ce-skill-shipped": ("~/Desktop/pathful/Context-Engine-Extension", "187f674", "skills/claude/context-engine",
+                         "f64e9db1980d82fc06ec2ded421b7b210e0f5ba9ec998e67b9484e0aba93388a"),
+    "ce-skill-stale": ("~/Desktop/Context-Engine", "24d0ff49", "vscode-extension-saas/context-engine-uploader/skills/claude/context-engine",
+                       "4375a2180bee737c0b9807437ce67764daee9b6385f05104f2914ad5700a0c06"),
+}
+ARMS = ("normal", "ce", *SKILLS)
+CE_ARMS = ("ce", *SKILLS)
+SKILL_RULE = "# Important, always use skill `context-engine`\n\n"  # mcp_config.js prependRulesFile
+SKILL_HOMES = "/tmp/ce-audit/skill-home"
 TRANSIENT = re.compile(r"(?i)\b(?:5\d\d|429|overloaded|rate.?limit|throttl\w*|timed? ?out|ECONN\w*|socket|network|"
                        r"unavailable|service.?error|internal.?server)\b")
 RESERVE = {"sonnet55": 2.0, "haiku55": 0.3}  # $ held back per in-flight run when checking the cap
 
 
 def build_cmd(prompt, arm, model):
-    ce = arm == "ce"
-    return ["claude", "-p", prompt, "--setting-sources", "", "--strict-mcp-config",
+    ce, skill = arm in CE_ARMS, arm in SKILLS
+    tools = liveloc.BUILTIN + (["Skill"] if skill else [])
+    return [acore.CLAUDE_BIN, "-p", prompt, "--setting-sources", "user" if skill else "", "--strict-mcp-config",
             "--mcp-config", llcore.MCP_CFG if ce else llcore.NO_MCP_CFG,
-            "--tools", ",".join(liveloc.BUILTIN),
-            "--allowedTools", " ".join(liveloc.BUILTIN + (liveloc.CE_TOOLS if ce else [])),
+            "--tools", ",".join(tools),
+            "--allowedTools", " ".join(tools + (liveloc.CE_TOOLS if ce else [])),
             "--disallowedTools", " ".join(liveloc.DENY + (liveloc.CE_DENY if ce else [])),
             "--model", acore.MODELS[model], "--max-turns", str(MAX_TURNS), "--max-budget-usd", str(MAX_BUDGET),
             "--output-format", "stream-json", "--verbose", "--no-session-persistence"]
@@ -51,17 +70,27 @@ def key(pid, arm, model, rep):
 
 
 def summarize(events, model):
-    res, init, tools = None, {}, {}
+    results, init, tools, skills_used = [], {}, {}, []
     for ev in events:
         if ev.get("type") == "system" and ev.get("subtype") == "init":
-            init = {k: ev.get(k) for k in ("model", "claude_code_version", "tools", "mcp_servers", "plugins", "cwd")}
+            init = {k: ev.get(k) for k in ("model", "claude_code_version", "tools", "mcp_servers", "plugins", "cwd", "skills", "slash_commands")}
         elif ev.get("type") == "assistant":
             for b in ev.get("message", {}).get("content", []):
                 if b.get("type") == "tool_use":
                     tools[b["name"]] = tools.get(b["name"], 0) + 1
+                    if b["name"] == "Skill":
+                        skills_used.append(str((b.get("input") or {}).get("skill") or (b.get("input") or {}).get("command")))
         elif ev.get("type") == "result":
-            res = ev
-    res = res or {}
+            results.append(ev)
+    # a background Bash job finishing after the answer makes Claude Code emit another result segment: the answer is
+    # every segment's text, turns and usage add up, total_cost_usd is already cumulative (take the last)
+    res = dict(results[-1]) if results else {}
+    if len(results) > 1:
+        res["result"] = "\n\n".join(r.get("result") or "" for r in results)
+        res["num_turns"] = sum(r.get("num_turns") or 0 for r in results)
+        res["usage"] = {k: sum((r.get("usage") or {}).get(k) or 0 for r in results) for k in
+                        ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")}
+        res["is_error"] = any(r.get("is_error") for r in results)
     keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
     if res:
         usage = {k: (res.get("usage") or {}).get(k) or 0 for k in keys}
@@ -70,12 +99,40 @@ def summarize(events, model):
         usage = {k: sum(u.get(k) or 0 for u in last.values()) for k in keys}
     cost, over = acore.run_cost(events, acore.MODELS[model])
     # num_turns as Claude Code counts it (tool round trips + 1) also when the run was killed before reporting it
-    return {"subtype": res.get("subtype"), "is_error": res.get("is_error"),
+    return {"subtype": res.get("subtype"), "is_error": res.get("is_error"), "result_segments": len(results),
             "num_turns": res.get("num_turns") if res else sum(tools.values()) + 1,
             "usage": usage, "total_tokens": sum(usage.values()), "cost_cc": res.get("total_cost_usd"), "cost_bedrock": cost,
             "haiku_calls_over_100k": over, "model_usage": res.get("modelUsage"), "tool_calls_by_name": tools,
             "tool_calls": sum(tools.values()), "ce_calls": sum(v for k, v in tools.items() if k.startswith("mcp__context-engine__")),
+            "skill_calls": tools.get("Skill", 0), "skills_used": skills_used,
             "answer": res.get("result") or "", "init": init}
+
+
+def skill_home(name, arm):
+    """Fresh per-run config dir holding exactly what the extension installs into ~/.claude for the Claude skill,
+    with the skill folder taken from git at the arm's pinned commit."""
+    repo, commit, folder, sha = SKILLS[arm]
+    repo = os.path.expanduser(repo)
+    home = os.path.join(SKILL_HOMES, name)
+    shutil.rmtree(home, ignore_errors=True)
+    files = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "--name-only", commit, folder + "/"],
+                           capture_output=True, text=True, check=True).stdout.split()
+    for f in files:
+        dest = os.path.join(home, "skills", "context-engine", os.path.relpath(f, folder))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(subprocess.run(["git", "-C", repo, "show", f"{commit}:{f}"], capture_output=True, check=True).stdout)
+    got = hashlib.sha256(open(os.path.join(home, "skills", "context-engine", "SKILL.md"), "rb").read()).hexdigest()
+    if got != sha:
+        raise SystemExit(f"{arm} SKILL.md sha256 {got} != pinned {sha}")
+    with open(os.path.join(home, "CLAUDE.md"), "w") as fh:
+        fh.write(SKILL_RULE)
+    return home
+
+
+def skill_loaded(init):
+    # a user skill is listed under slash_commands (init "skills" holds only the bundled ones)
+    return "Skill" in (init.get("tools") or []) and "context-engine" in (init.get("skills") or []) + (init.get("slash_commands") or [])
 
 
 def ce_connected(init):
@@ -88,17 +145,20 @@ def run_one(item, arm, model, rep, coll, build):
     base = os.path.join(acore.RUNS, key(item["id"], arm, model, rep))
     if os.path.exists(base + ".json"):
         prev = json.load(open(base + ".json"))
-        if prev.get("ok") and prev.get("digest_valid") is not False:
+        if prev.get("ok") and prev.get("digest_valid") is not False and \
+                (prev.get("init") or {}).get("claude_code_version") in (acore.CLAUDE_VERSION, None):
             return prev
-        stamp = time.strftime("%Y%m%dT%H%M%S")  # failed or build changed mid-run: keep it aside, run again
+        stamp = time.strftime("%Y%m%dT%H%M%S")  # failed, build changed or wrong CLI version: keep it aside, run again
         for ext in (".json", ".jsonl", ".stderr"):
             if os.path.exists(base + ext):
                 os.replace(base + ext, base + f".invalid-{stamp}{ext}")
     attempt = 1 + len([f for f in os.listdir(acore.RUNS) if f.startswith(os.path.basename(base) + ".invalid-")
                        and f.endswith(".json")])
-    llcore.need_disk(f"audit run {os.path.basename(base)}", wait_s=1800)
+    llcore.need_disk(f"audit run {os.path.basename(base)}", wait_s=4 * 3600)  # other drivers share this disk
     prompt = acore.prompt_text(item)
     env = {**os.environ, **llcore.bedrock_env(), "DISABLE_AUTOUPDATER": "1"}
+    if arm in SKILLS:
+        env["CLAUDE_CONFIG_DIR"] = skill_home(os.path.basename(base), arm)
     d0 = llcore.indexer_digests()
     t0 = time.time()
     events = []
@@ -132,12 +192,20 @@ def run_one(item, arm, model, rep, coll, build):
            "attempt": attempt,
            "hit_ceiling": s["subtype"] in liveloc.VALID_CAPS or timed_out, "timed_out": timed_out,
            "returncode": proc.returncode, "wall_s": round(time.time() - t0, 1),
-           "graperoot_sha": acore.GRAPEROOT_SHA, "snapshot": acore.SNAPSHOT, "collection": coll if arm == "ce" else None,
+           "graperoot_sha": acore.GRAPEROOT_SHA, "snapshot": acore.SNAPSHOT, "collection": coll if arm in CE_ARMS else None,
            "digest_start": d0, "digest_end": d1, "stderr_tail": "" if s["subtype"] else open(base + ".stderr").read()[-800:]}
-    if arm == "ce":  # one pinned CE build for the whole batch, and the MCP server must have connected
+    if arm in CE_ARMS:  # one pinned CE build for the whole batch, and the MCP server must have connected
         rec["ce_connected"] = ce_connected(s["init"])
         rec["digest_valid"] = d0 == d1 == [build]
         rec["ok"] = rec["ok"] and rec["ce_connected"]
+    if s["init"].get("claude_code_version") != acore.CLAUDE_VERSION:
+        rec["ok"] = False
+    if arm in SKILLS:  # the arm is invalid unless Claude Code listed the skill and offered the Skill tool
+        repo, commit, folder, sha = SKILLS[arm]
+        rec["skill_loaded"], rec["skill_sha256"] = skill_loaded(s["init"]), sha
+        rec["skill_source"] = f"{os.path.basename(os.path.expanduser(repo))}@{commit}:{folder}"
+        rec["ok"] = rec["ok"] and rec["skill_loaded"]
+        shutil.rmtree(env["CLAUDE_CONFIG_DIR"], ignore_errors=True)
     c = cites.check(rec["answer"])
     rec["cites"] = {k: v for k, v in c.items() if k != "rows"}
     rec["cite_rows"] = c["rows"]
@@ -158,7 +226,7 @@ def main():
     prompts = acore.load_prompts()
     ids = acore.SMOKE_IDS if a.smoke else ([int(x) for x in a.ids.split(",")] if a.ids else sorted(prompts))
     arms = a.arms.split(",")
-    assert set(arms) <= {"normal", "ce"}, arms
+    assert set(arms) <= set(ARMS), arms
     os.makedirs(acore.RUNS, exist_ok=True)
     mem = os.path.expanduser("~/.claude/projects/" + os.path.realpath(acore.TREE).replace("/", "-").replace("_", "-") + "/memory")
     if os.path.isdir(mem) and os.listdir(mem):
@@ -166,7 +234,7 @@ def main():
     coll = acore.collection()
     if not llcore.indexer_digests():
         raise SystemExit("no CE build digest readable: set LIVELOC_KUBE_CONTEXT to the CE cluster's kubectl context")
-    if "ce" in arms:
+    if set(arms) & set(CE_ARMS):
         if not (llcore.load_json(llcore.COLLECTIONS)[acore.TREE_NAME].get("fresh_split") or {}).get("dev"):
             raise SystemExit(f"{acore.TREE_NAME} has not passed freshness.py --split dev; ce arm not started")
         if len(llcore.indexer_digests()) != 1:
@@ -179,7 +247,7 @@ def main():
                                                                      "serverInfo": info.get("serverInfo"),
                                                                      "instructions": info.get("instructions")})
     llcore.write_mcp_configs()
-    build = llcore.indexer_digests()[0] if "ce" in arms else None
+    build = llcore.indexer_digests()[0] if set(arms) & set(CE_ARMS) else None
     manifest = acore.tree_manifest()
     bpath = os.path.join(acore.RUNS, "_batch.json")
     batch = llcore.load_json(bpath)
