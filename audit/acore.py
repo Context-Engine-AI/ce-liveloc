@@ -160,3 +160,31 @@ def ce_server_info(cwd=TREE, timeout_s=60):
     finally:
         timer.cancel()
         p.terminate()
+
+
+def ce_calls(trace_path):
+    """[(tool, seconds from tool_use to its result, include_snippet arg, failed)] for every CE call in a run trace.
+    failed = the tool result is an error or a CE reply with ok=false (e.g. the 90 s deadline, a 502 from the edge)."""
+    uses, out = {}, []
+    for line in open(trace_path):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        ev, t = rec.get("ev") or {}, rec.get("_t") or 0.0
+        if ev.get("type") == "assistant":
+            for b in ev.get("message", {}).get("content", []):
+                if b.get("type") == "tool_use" and b.get("name", "").startswith("mcp__context-engine__"):
+                    uses.setdefault(b["id"], (t, b["name"], (b.get("input") or {}).get("include_snippet")))
+        elif ev.get("type") == "user":
+            for b in (ev.get("message") or {}).get("content") or []:
+                if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") in uses:
+                    t0, name, snip = uses.pop(b["tool_use_id"])
+                    c = b.get("content")
+                    txt = "".join(x.get("text", "") for x in c if isinstance(x, dict)) if isinstance(c, list) else str(c or "")
+                    try:
+                        ok = (json.loads(txt) or {}).get("ok", True)
+                    except (ValueError, AttributeError):
+                        ok = not txt.lower().startswith(("error", "mcp error", "mcp-remote: error"))
+                    out.append((name, round(t - t0, 2), snip, bool(b.get("is_error")) or ok is False))
+    return out

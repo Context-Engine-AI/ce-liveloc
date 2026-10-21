@@ -13,7 +13,8 @@ Arms (prompt = GrapeRoot's prompt verbatim + acore.CITE_LINE; no system-prompt a
           --setting-sources user, so ~/.claude is never read or written; the Skill tool is added to its tools.
           ce-skill-shipped: the skill the extension ships (Context-Engine-Extension 187f674 = release 2.3.27).
           ce-skill-stale:   an older copy from the retired monorepo (Context-Engine 24d0ff49), run first by mistake.
-          ce-skill-slim:    a 27-line candidate skill (work/skills/slim), on its own frozen CE build.
+          ce-skill-slim:    a 27-line candidate skill (audit/skills/slim), on its own frozen CE build.
+          ce-skill-locate:  a 14-line skill making CE a locator (repo_search include_snippet=false, then Read), own build.
 Both: --setting-sources "" (no CLAUDE.md/AGENTS.md, user hooks or plugins), --strict-mcp-config, cwd = the pinned
 Gitea snapshot tree, harness/run.py's deny list (no network, git, edits, interpreters). Ceilings are identical safety
 limits the agent is never told about: --max-turns 150, --max-budget-usd 8, 45 min wall; a run that hits one is a
@@ -45,8 +46,10 @@ SKILLS = {  # arm -> (git repo, commit, skill folder, SKILL.md sha256)
     "ce-skill-stale": ("~/Desktop/Context-Engine", "24d0ff49", "vscode-extension-saas/context-engine-uploader/skills/claude/context-engine",
                        "4375a2180bee737c0b9807437ce67764daee9b6385f05104f2914ad5700a0c06"),
     # commit None: a working-copy folder (not in git), pinned by its SKILL.md sha256
-    "ce-skill-slim": ("~/Desktop/pathful/ce-liveloc", None, "work/skills/slim",
+    "ce-skill-slim": ("~/Desktop/pathful/ce-liveloc", None, "audit/skills/slim",  # ran from work/skills/slim, same sha
                       "637e438c7beda87f7cd309e630afd1c4ae89c0fcdf98610c6244e2807672d4a4"),
+    "ce-skill-locate": ("~/Desktop/pathful/ce-liveloc", None, "audit/skills/locate",
+                        "d64429c1140558294dfe33cb4761f74cbd9e6d628787148fb89aee79a90f6ff3"),
 }
 ARMS = ("normal", "ce", *SKILLS)
 CE_ARMS = ("ce", *SKILLS)

@@ -84,3 +84,25 @@ We also report adoption: CE calls per run, the share of runs that use CE, and ho
 - Every run records the CE `mcp-indexer-http` image digest. A batch whose digest changes mid-run is re-run.
 - Each collection must pass the freshness and routing gate (`harness/freshness.py`) before any run.
 - No test-split result is excluded after the fact. The test split is run once per model.
+
+## Amendment: GrapeRoot-Gitea audit, arm `ce-skill-locate` (2026-10-21T18:11Z, before any locate run)
+
+This amendment covers `audit/`, a separate A/B on GrapeRoot's Gitea audit prompts. It is not part of the LiveLoc
+analysis above.
+
+- **Arm.** `ce-skill-locate` = `ce-skill-slim`'s setup with `audit/skills/locate/SKILL.md` (sha256
+  `d64429c1140558294dfe33cb4761f74cbd9e6d628787148fb89aee79a90f6ff3`).
+  - Sonnet 5.5, 30 prompts × 3 repeats, Claude Code 2.1.304, CE build `8f9c8785…`.
+  - Paired with the existing Sonnet normal runs by prompt and repeat. Judged by Opus 5.5 and GPT-6.1 with unchanged
+    settings.
+- **Primary readout: non-inferiority to `normal` on two Opus-judged metrics.** Each is the mean per-prompt paired
+  difference (locate − normal, repeats averaged):
+  - correctness score (1–10): margin **−0.5 points**;
+  - preference (+1 locate win / 0 tie / −1 normal win per pair): margin **−0.2**, i.e. normal winning 10 percentage
+    points more pairs than locate.
+- **Rule.** Locate is non-inferior on a metric if the lower bound of its 95% bootstrap CI (prompt-clustered, 10,000
+  draws, seed 7) is above the margin.
+  - GPT-6.1 results on the same metrics are secondary.
+  - Holm-adjusted p values over the whole table are reported as before, but the non-inferiority call uses the CI rule
+    only.
+- **Stop rule.** Stop the arm if any CE call in the gate or the first runs takes over 10 s.

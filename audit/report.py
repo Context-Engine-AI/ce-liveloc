@@ -89,22 +89,28 @@ def model_section(model, ids, judges):
              f"complete set (excluded from descriptives, still used in any pair they complete): {', '.join(partial) or 'none'}. "
              f"Sets whose runs differ in Claude Code version or model: {', '.join(mism) or 'none'}.\n")
     L.append("| arm | runs | turns mean (median) | total tokens mean | input / cache-write / cache-read / output (mean) | "
-             "$/run | $ total | wall s mean | tool calls/run | Read calls/run | CE calls/run | runs calling CE | Skill calls/run | "
+             "$/run | $ total | wall s mean | tool calls/run | Read calls/run | CE calls/run | runs calling CE | "
+             "CE calls with include_snippet=false | CE call s median / p95 | CE calls failed | Skill calls/run | "
              "runs at a ceiling | extra attempts | citations/run | cited regions found | hallucinated citations (pooled) |")
-    L.append("|---|" + "---|" * 17)
+    L.append("|---|" + "---|" * 20)
     for arm in arms:
         rs = [runs[(i, arm, rep)] for i, rep in full]
         if not rs:
             continue
         u = {k: st.mean(r["usage"][k] for r in rs) for k in rs[0]["usage"]}
         c = {k: sum(r["cites"][k] for r in rs) for k in ("n", "ok", "hallucinated", "ambiguous")}
+        cc = [x for r in rs if r["ce_calls"] for x in acore.ce_calls(os.path.join(
+            acore.RUNS, f"{r['id']:02d}__{r['arm']}__{r['model']}__r{r['rep']}.jsonl"))]
+        lat = sorted(x[1] for x in cc)
+        cec = (f"{sum(x[2] is False for x in cc)}/{len(cc)} | {lat[len(lat) // 2]:.1f} / {lat[int(len(lat) * .95)]:.1f} | "
+               f"{sum(x[3] for x in cc)}") if cc else "— | — | —"
         L.append(f"| {arm} | {len(rs)} | {st.mean(r['num_turns'] for r in rs):.1f} ({st.median(r['num_turns'] for r in rs):.0f}) | "
                  f"{st.mean(r['total_tokens'] for r in rs):,.0f} | {u['input_tokens']:,.0f} / {u['cache_creation_input_tokens']:,.0f} / "
                  f"{u['cache_read_input_tokens']:,.0f} / {u['output_tokens']:,.0f} | {st.mean(r['cost_bedrock'] for r in rs):.4f} | "
                  f"{sum(r['cost_bedrock'] for r in rs):.2f} | {st.mean(r['wall_s'] for r in rs):.0f} | "
                  f"{st.mean(r['tool_calls'] for r in rs):.1f} | {st.mean(r['tool_calls_by_name'].get('Read', 0) for r in rs):.2f} | "
                  f"{st.mean(r['ce_calls'] for r in rs):.2f} | "
-                 f"{sum(1 for r in rs if r['ce_calls'])}/{len(rs)} | {st.mean(r.get('skill_calls') or 0 for r in rs):.2f} | "
+                 f"{sum(1 for r in rs if r['ce_calls'])}/{len(rs)} | {cec} | {st.mean(r.get('skill_calls') or 0 for r in rs):.2f} | "
                  f"{sum(1 for r in rs if r['hit_ceiling'])} | {sum((r.get('attempt') or 1) - 1 for r in rs)} | "
                  f"{c['n'] / len(rs):.1f} | {c['ok'] / c['n'] if c['n'] else 0:.3f} | "
                  f"{c['hallucinated']}/{c['n'] - c['ambiguous']} = "
