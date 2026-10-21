@@ -90,9 +90,10 @@ def model_section(model, ids, judges):
              f"Sets whose runs differ in Claude Code version or model: {', '.join(mism) or 'none'}.\n")
     L.append("| arm | runs | turns mean (median) | total tokens mean | input / cache-write / cache-read / output (mean) | "
              "$/run | $ total | wall s mean | tool calls/run | Read calls/run | CE calls/run | runs calling CE | "
-             "CE calls with include_snippet=false | CE call s median / p95 | CE calls failed | Skill calls/run | "
+             "CE calls with include_snippet=false | CE call s median / p90 / max | CE calls > 5 s | CE calls failed / degraded | "
+             "Skill calls/run | "
              "runs at a ceiling | extra attempts | citations/run | cited regions found | hallucinated citations (pooled) |")
-    L.append("|---|" + "---|" * 20)
+    L.append("|---|" + "---|" * 21)
     for arm in arms:
         rs = [runs[(i, arm, rep)] for i, rep in full]
         if not rs:
@@ -102,8 +103,8 @@ def model_section(model, ids, judges):
         cc = [x for r in rs if r["ce_calls"] for x in acore.ce_calls(os.path.join(
             acore.RUNS, f"{r['id']:02d}__{r['arm']}__{r['model']}__r{r['rep']}.jsonl"))]
         lat = sorted(x[1] for x in cc)
-        cec = (f"{sum(x[2] is False for x in cc)}/{len(cc)} | {lat[len(lat) // 2]:.1f} / {lat[int(len(lat) * .95)]:.1f} | "
-               f"{sum(x[3] for x in cc)}") if cc else "— | — | —"
+        cec = (f"{sum(x[2] is False for x in cc)}/{len(cc)} | {lat[len(lat) // 2]:.1f} / {lat[int(len(lat) * .9)]:.1f} / "
+               f"{lat[-1]:.1f} | {sum(x > 5 for x in lat)} | {sum(x[3] for x in cc)} / {sum(x[4] for x in cc)}") if cc else "— | — | — | —"
         L.append(f"| {arm} | {len(rs)} | {st.mean(r['num_turns'] for r in rs):.1f} ({st.median(r['num_turns'] for r in rs):.0f}) | "
                  f"{st.mean(r['total_tokens'] for r in rs):,.0f} | {u['input_tokens']:,.0f} / {u['cache_creation_input_tokens']:,.0f} / "
                  f"{u['cache_read_input_tokens']:,.0f} / {u['output_tokens']:,.0f} | {st.mean(r['cost_bedrock'] for r in rs):.4f} | "

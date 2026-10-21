@@ -106,3 +106,7 @@ analysis above.
   - Holm-adjusted p values over the whole table are reported as before, but the non-inferiority call uses the CI rule
     only.
 - **Stop rule.** Stop the arm if any CE call in the gate or the first runs takes over 10 s.
+- **Stop rule, updated 18:19Z before any locate run.** Replaces the 10 s rule above, at the
+  coordinator's request after the 6–10 s Helion hybrid-stage tail was diagnosed as complete-but-late. Stop if any CE
+  call takes over 30 s, or if any CE reply is degraded (`degraded: true`, a `*_status` of timeout or dropped, or a
+  dense channel reported off). Margins and readout are unchanged.

@@ -162,9 +162,29 @@ def ce_server_info(cwd=TREE, timeout_s=60):
         p.terminate()
 
 
+_BAD_STATUS = {"timeout", "timed_out", "degraded", "dropped", "error", "failed", "unavailable"}
+
+
+def _degraded(o):
+    if not isinstance(o, dict):
+        return False
+    for k, v in o.items():
+        if k == "results":
+            continue
+        if (k == "degraded" or k.endswith("_timed_out") or k.endswith("_dropped")) and v is True:
+            return True
+        if k.endswith("_status") and isinstance(v, str) and v.lower() in _BAD_STATUS:
+            return True
+        if "dense" in k and (v is False or (isinstance(v, str) and v.lower() in _BAD_STATUS)):
+            return True
+    return False
+
+
 def ce_calls(trace_path):
-    """[(tool, seconds from tool_use to its result, include_snippet arg, failed)] for every CE call in a run trace.
-    failed = the tool result is an error or a CE reply with ok=false (e.g. the 90 s deadline, a 502 from the edge)."""
+    """[(tool, seconds from tool_use to its result, include_snippet arg, failed, degraded)] for every CE call in a trace.
+    failed = the tool result is an error or a CE reply with ok=false (e.g. the 90 s deadline, a 502 from the edge);
+    degraded = a CE reply flagging partial service: degraded=true, a *_status of timeout/degraded/dropped, or a dense
+    channel reported off."""
     uses, out = {}, []
     for line in open(trace_path):
         try:
@@ -183,8 +203,9 @@ def ce_calls(trace_path):
                     c = b.get("content")
                     txt = "".join(x.get("text", "") for x in c if isinstance(x, dict)) if isinstance(c, list) else str(c or "")
                     try:
-                        ok = (json.loads(txt) or {}).get("ok", True)
+                        o = json.loads(txt) or {}
+                        ok = o.get("ok", True)
                     except (ValueError, AttributeError):
-                        ok = not txt.lower().startswith(("error", "mcp error", "mcp-remote: error"))
-                    out.append((name, round(t - t0, 2), snip, bool(b.get("is_error")) or ok is False))
+                        o, ok = {}, not txt.lower().startswith(("error", "mcp error", "mcp-remote: error"))
+                    out.append((name, round(t - t0, 2), snip, bool(b.get("is_error")) or ok is False, _degraded(o)))
     return out
