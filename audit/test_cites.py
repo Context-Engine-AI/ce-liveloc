@@ -89,7 +89,16 @@ def main():
     evs[0]["message"]["usage"]["cache_read_input_tokens"] = evs[1]["usage"]["cache_read_input_tokens"] = 200_000
     c, over = acore.run_cost(evs, "us.anthropic.claude-haiku-5-5")
     assert over == 1 and abs(c - (1000 * .5 + 2000 * .625 + 200_000 * .05 + 400 * 2.5) * 1.1 / 1e6) < 1e-9, c
-    print("cites + cost self-checks passed")
+    # cite_sources: numbered Bash output (multi-file grep -n, single-file grep -n, cat -n) and class precedence
+    import cite_sources as cs
+    num = cs.bash_numbered(d, "grep -rn foo .", "models/user.go:4:line4\nrouters/api/v1/api.go:12:x")
+    assert num == {"models/user.go": [(4, 4)], "routers/api/v1/api.go": [(12, 12)]}, num
+    assert cs.bash_numbered(d, "grep -n foo models/user.go", "7:line7\n8-line8") == {"models/user.go": [(7, 7), (8, 8)]}
+    assert cs.bash_numbered(d, "cat -n models/user.go | head", "     3\tline3") == {"models/user.go": [(3, 3)]}
+    assert cs.bash_numbered(d, "sed -n 2,5p models/user.go", "line2\nline3") == {}
+    v = {"numbered": {"a.go": [(1, 5)]}, "ce_number": {"a.go": {9}}, "ce_snippet": {"a.go": [(1, 20)]}, "unnumbered": {"a.go": [(1, 40)]}}
+    assert [cs.classify(v, "a.go", n) for n in (3, 9, 15, 30, 50)] == ["numbered", "ce_number", "ce_snippet", "unnumbered", "unseen"]
+    print("cites + cost + cite_sources self-checks passed")
 
 
 if __name__ == "__main__":

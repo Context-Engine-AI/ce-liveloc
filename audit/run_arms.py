@@ -13,6 +13,7 @@ Arms (prompt = GrapeRoot's prompt verbatim + acore.CITE_LINE; no system-prompt a
           --setting-sources user, so ~/.claude is never read or written; the Skill tool is added to its tools.
           ce-skill-shipped: the skill the extension ships (Context-Engine-Extension 187f674 = release 2.3.27).
           ce-skill-stale:   an older copy from the retired monorepo (Context-Engine 24d0ff49), run first by mistake.
+          ce-skill-slim:    a 27-line candidate skill (work/skills/slim), on its own frozen CE build.
 Both: --setting-sources "" (no CLAUDE.md/AGENTS.md, user hooks or plugins), --strict-mcp-config, cwd = the pinned
 Gitea snapshot tree, harness/run.py's deny list (no network, git, edits, interpreters). Ceilings are identical safety
 limits the agent is never told about: --max-turns 150, --max-budget-usd 8, 45 min wall; a run that hits one is a
@@ -43,6 +44,9 @@ SKILLS = {  # arm -> (git repo, commit, skill folder, SKILL.md sha256)
                          "f64e9db1980d82fc06ec2ded421b7b210e0f5ba9ec998e67b9484e0aba93388a"),
     "ce-skill-stale": ("~/Desktop/Context-Engine", "24d0ff49", "vscode-extension-saas/context-engine-uploader/skills/claude/context-engine",
                        "4375a2180bee737c0b9807437ce67764daee9b6385f05104f2914ad5700a0c06"),
+    # commit None: a working-copy folder (not in git), pinned by its SKILL.md sha256
+    "ce-skill-slim": ("~/Desktop/pathful/ce-liveloc", None, "work/skills/slim",
+                      "637e438c7beda87f7cd309e630afd1c4ae89c0fcdf98610c6244e2807672d4a4"),
 }
 ARMS = ("normal", "ce", *SKILLS)
 CE_ARMS = ("ce", *SKILLS)
@@ -115,13 +119,16 @@ def skill_home(name, arm):
     repo = os.path.expanduser(repo)
     home = os.path.join(SKILL_HOMES, name)
     shutil.rmtree(home, ignore_errors=True)
-    files = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "--name-only", commit, folder + "/"],
-                           capture_output=True, text=True, check=True).stdout.split()
-    for f in files:
-        dest = os.path.join(home, "skills", "context-engine", os.path.relpath(f, folder))
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "wb") as fh:
-            fh.write(subprocess.run(["git", "-C", repo, "show", f"{commit}:{f}"], capture_output=True, check=True).stdout)
+    if commit is None:
+        shutil.copytree(os.path.join(repo, folder), os.path.join(home, "skills", "context-engine"))
+    else:
+        files = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "--name-only", commit, folder + "/"],
+                               capture_output=True, text=True, check=True).stdout.split()
+        for f in files:
+            dest = os.path.join(home, "skills", "context-engine", os.path.relpath(f, folder))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as fh:
+                fh.write(subprocess.run(["git", "-C", repo, "show", f"{commit}:{f}"], capture_output=True, check=True).stdout)
     got = hashlib.sha256(open(os.path.join(home, "skills", "context-engine", "SKILL.md"), "rb").read()).hexdigest()
     if got != sha:
         raise SystemExit(f"{arm} SKILL.md sha256 {got} != pinned {sha}")
@@ -203,7 +210,7 @@ def run_one(item, arm, model, rep, coll, build):
     if arm in SKILLS:  # the arm is invalid unless Claude Code listed the skill and offered the Skill tool
         repo, commit, folder, sha = SKILLS[arm]
         rec["skill_loaded"], rec["skill_sha256"] = skill_loaded(s["init"]), sha
-        rec["skill_source"] = f"{os.path.basename(os.path.expanduser(repo))}@{commit}:{folder}"
+        rec["skill_source"] = f"{os.path.basename(os.path.expanduser(repo))}@{commit or 'working-copy'}:{folder}"
         rec["ok"] = rec["ok"] and rec["skill_loaded"]
         shutil.rmtree(env["CLAUDE_CONFIG_DIR"], ignore_errors=True)
     c = cites.check(rec["answer"])
@@ -247,15 +254,21 @@ def main():
                                                                      "serverInfo": info.get("serverInfo"),
                                                                      "instructions": info.get("instructions")})
     llcore.write_mcp_configs()
-    build = llcore.indexer_digests()[0] if set(arms) & set(CE_ARMS) else None
+    live = llcore.indexer_digests()[0] if set(arms) & set(CE_ARMS) else None
     manifest = acore.tree_manifest()
     bpath = os.path.join(acore.RUNS, "_batch.json")
     batch = llcore.load_json(bpath)
     if batch.get("manifest", manifest) != manifest:
         raise SystemExit(f"tree manifest {manifest} != batch {batch['manifest']}: the snapshot changed")
-    if build and batch.get("build") and batch["build"] != build:
-        raise SystemExit(f"CE build {build} != this batch's pinned {batch['build']}; start a new batch (AUDIT_TAG)")
-    llcore.save_json(bpath, {"manifest": manifest, "build": batch.get("build") or build})
+    # one CE build per arm: an arm that already has runs keeps the batch build it ran on; a new arm pins the live one
+    builds = batch.get("builds") or {}
+    for arm in (a for a in arms if a in CE_ARMS):
+        if arm not in builds:
+            ran = any(f.startswith(tuple(f"{i:02d}__{arm}__" for i in ids)) for f in os.listdir(acore.RUNS))
+            builds[arm] = batch.get("build") if ran and batch.get("build") else live
+        if builds[arm] != live:
+            raise SystemExit(f"{arm} is pinned to CE build {builds[arm]}, live is {live}")
+    llcore.save_json(bpath, {"manifest": manifest, "build": batch.get("build") or live, "builds": builds})
     jobs = [(prompts[i], arm, r) for r in range(1, a.repeats + 1) for i in ids for arm in arms]  # arms interleaved
     print(f"{len(jobs)} runs model={a.model} arms={arms} ids={ids} repeats={a.repeats} spent=${acore.spent():.2f} "
           f"cap=${a.cap} digests={llcore.indexer_digests()}", flush=True)
@@ -267,7 +280,7 @@ def main():
                 raise RuntimeError("cost cap reached")
             inflight[0] += 1
         try:
-            return run_one(item, arm, a.model, rep, coll, build)
+            return run_one(item, arm, a.model, rep, coll, builds.get(arm))
         finally:
             with lock:
                 inflight[0] -= 1

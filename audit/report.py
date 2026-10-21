@@ -89,9 +89,9 @@ def model_section(model, ids, judges):
              f"complete set (excluded from descriptives, still used in any pair they complete): {', '.join(partial) or 'none'}. "
              f"Sets whose runs differ in Claude Code version or model: {', '.join(mism) or 'none'}.\n")
     L.append("| arm | runs | turns mean (median) | total tokens mean | input / cache-write / cache-read / output (mean) | "
-             "$/run | $ total | wall s mean | tool calls/run | CE calls/run | runs calling CE | Skill calls/run | "
+             "$/run | $ total | wall s mean | tool calls/run | Read calls/run | CE calls/run | runs calling CE | Skill calls/run | "
              "runs at a ceiling | extra attempts | citations/run | cited regions found | hallucinated citations (pooled) |")
-    L.append("|---|" + "---|" * 16)
+    L.append("|---|" + "---|" * 17)
     for arm in arms:
         rs = [runs[(i, arm, rep)] for i, rep in full]
         if not rs:
@@ -102,7 +102,8 @@ def model_section(model, ids, judges):
                  f"{st.mean(r['total_tokens'] for r in rs):,.0f} | {u['input_tokens']:,.0f} / {u['cache_creation_input_tokens']:,.0f} / "
                  f"{u['cache_read_input_tokens']:,.0f} / {u['output_tokens']:,.0f} | {st.mean(r['cost_bedrock'] for r in rs):.4f} | "
                  f"{sum(r['cost_bedrock'] for r in rs):.2f} | {st.mean(r['wall_s'] for r in rs):.0f} | "
-                 f"{st.mean(r['tool_calls'] for r in rs):.1f} | {st.mean(r['ce_calls'] for r in rs):.2f} | "
+                 f"{st.mean(r['tool_calls'] for r in rs):.1f} | {st.mean(r['tool_calls_by_name'].get('Read', 0) for r in rs):.2f} | "
+                 f"{st.mean(r['ce_calls'] for r in rs):.2f} | "
                  f"{sum(1 for r in rs if r['ce_calls'])}/{len(rs)} | {st.mean(r.get('skill_calls') or 0 for r in rs):.2f} | "
                  f"{sum(1 for r in rs if r['hit_ceiling'])} | {sum((r.get('attempt') or 1) - 1 for r in rs)} | "
                  f"{c['n'] / len(rs):.1f} | {c['ok'] / c['n'] if c['n'] else 0:.3f} | "
@@ -181,7 +182,11 @@ def main():
     ids = set(acore.SMOKE_IDS if a.smoke else ([int(x) for x in a.ids.split(",")] if a.ids else prompts))
     judges, models = a.judges.split(","), a.models.split(",")
     allruns = [r for m in models for k, r in judge.load_runs(m).items() if k[0] in ids]
-    digests = sorted({d for r in allruns if r["arm"] == "ce" for d in (r["digest_start"] or []) + (r["digest_end"] or [])})
+    arm_digests = {}
+    for r in allruns:
+        if r["arm"] in run_arms.CE_ARMS:
+            arm_digests.setdefault(r["arm"], set()).update((r["digest_start"] or []) + (r["digest_end"] or []))
+    arm_digests = {k: sorted(v) for k, v in arm_digests.items()}
     cc = sorted({(r.get("init") or {}).get("claude_code_version") for r in allruns} - {None})
     jfiles = [os.path.join(acore.JUDGE, f) for f in sorted(os.listdir(acore.JUDGE))] if os.path.isdir(acore.JUDGE) else []
     jrecs = [j for j in (json.load(open(f)) for f in jfiles if f.endswith(".json")) if j["id"] in ids and j["model"] in models]
@@ -193,7 +198,8 @@ def main():
          f"copied into this repo); prompt ids {sorted(ids)}.",
          f"- Code: go-gitea/gitea snapshot `{acore.SNAPSHOT}` (tree `{acore.TREE_NAME}`, manifest "
          f"`{batch.get('manifest', '?')}`{'' if tree_ok else ' — CHANGED since the runs'}); CE collection `{acore.collection()}`.",
-         f"- CE build (mcp-indexer-http image digest, pinned per batch, over all ce runs): {', '.join(f'`{d}`' for d in digests) or '—'}.",
+         "- CE build (mcp-indexer-http image digest, pinned per arm): " + ("; ".join(
+             f"{arm}: " + ", ".join(f"`{d}`" for d in ds) for arm, ds in sorted(arm_digests.items())) or "—") + ".",
          f"- Agent: Claude Code {', '.join(cc)} headless. Judges: Claude Opus 5.5 (`{acore.JUDGE_OPUS}`, Bedrock, `claude -p`, "
          "no tools) and GPT-6.1 (`gpt-6.1-sol`, `codex exec`, shell and web off).",
          f"- Dollars: {acore.RATES_NOTE} This report: agent runs ${sum(r['cost_bedrock'] for r in allruns):.2f}, "
@@ -211,13 +217,15 @@ def main():
          "(installSkillClaude): the skill folder copied verbatim plus the line \"# Important, always use skill "
          "`context-engine`\" prepended to CLAUDE.md, both in a fresh per-run `CLAUDE_CONFIG_DIR` loaded with "
          "`--setting-sources user`, plus the Skill tool; a run where Claude Code did not list the skill is invalid. "
-         + " ".join(f"`{arm}`: SKILL.md sha256 `{sha[:16]}…` from `{os.path.basename(repo)}@{commit}`." for arm, (repo, commit, _f, sha)
-                    in run_arms.SKILLS.items())
+         + " ".join(f"`{arm}`: SKILL.md sha256 `{sha[:16]}…` from `{os.path.basename(repo)}@{commit or 'working copy, ' + _f}`."
+                    for arm, (repo, commit, _f, sha) in run_arms.SKILLS.items())
          + " **`ce-skill-shipped` is what the extension ships (Context-Engine-Extension 187f674, release 2.3.27). "
          "`ce-skill-stale` is an older copy from the retired monorepo, run by mistake first; it is reported as a finding "
          "about that file, not as the shipped product.** It has no opening frontmatter `---` and says \"NEVER use Read "
          "File or grep for exploration\". `ce-skill-shipped` ran on Sonnet only, after the other arms, so its wall time is "
-         "not comparable; its tokens, cost and quality are paired with the same normal runs.",
+         "not comparable; its tokens, cost and quality are paired with the same normal runs. `ce-skill-slim` (27 lines, written "
+         "after a diagnosis of the shipped skill's losses) ran the same way, Sonnet only, later still, on its own frozen CE "
+         "build; its wall time is not comparable either.",
          "- Scoring: a hallucinated citation is a cited file missing from the pinned tree or a line past its end (`audit/cites.py`); "
          "the judges see both answers (tool mentions scrubbed) plus the pinned code at every cited location, pooled, and grade "
          "verified correctness, specificity and false claims with a rubric that gives volume no credit (`audit/judge.py`).\n"]
